@@ -1,4 +1,5 @@
 
+import json
 import os
 import time
 
@@ -158,3 +159,115 @@ Rules:
                     time.sleep(5)
                 else:
                     raise
+
+    
+    def convert_plan_to_tasks(self, plan):
+        prompt = f"""
+You are converting a human-approved software development
+plan into structured GitHub Issues.
+
+Return ONLY a valid JSON array. Do not use Markdown fences
+or add text outside the JSON.
+
+Each task must have exactly these fields:
+- task_id: unique string, such as T1
+- title: concise issue title
+- description: clear explanation of the task
+- acceptance_criteria: array of measurable criteria
+- dependencies: array of task IDs; use [] if none
+
+Rules:
+- Extract only development tasks from the approved plan.
+- Do not create tasks for project summaries, assumptions,
+  or headings.
+- Preserve the task IDs and dependencies from the plan.
+- Do not invent new requirements.
+- Every task must have a non-empty title and task_id.
+- Return at least one task.
+
+APPROVED PLAN:
+{plan}
+"""
+
+        response = self.client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt,
+        )
+
+        if not response.text:
+            raise ValueError("Gemini returned an empty task list.")
+
+        result = response.text.strip()
+
+        # Remove Markdown code fences if Gemini adds them.
+        if result.startswith("```"):
+            lines = result.splitlines()
+            if lines[-1].strip() == "```":
+                lines = lines[:-1]
+            if lines and lines[0].strip().lower() in {
+                "```json", "```"
+            }:
+                lines = lines[1:]
+            result = "\n".join(lines).strip()
+
+        tasks = json.loads(result)
+
+        if not isinstance(tasks, list) or not tasks:
+            raise ValueError("The plan did not produce a valid task list.")
+
+        seen_ids = set()
+
+        for task in tasks:
+            required_fields = {
+                "task_id",
+                "title",
+                "description",
+                "acceptance_criteria",
+                "dependencies",
+            }
+
+            if not isinstance(task, dict):
+                raise ValueError("Each task must be a JSON object.")
+
+            if not required_fields.issubset(task):
+                raise ValueError(
+                    f"Task is missing required fields: {task}"
+                )
+
+            if not str(task["task_id"]).strip():
+                raise ValueError("A task has an empty task_id.")
+
+            if not str(task["title"]).strip():
+                raise ValueError(
+                    f"Task {task['task_id']} has an empty title."
+                )
+
+            task_id = str(task["task_id"]).strip()
+
+            if task_id in seen_ids:
+                raise ValueError(f"Duplicate task ID: {task_id}")
+
+            seen_ids.add(task_id)
+
+            if not isinstance(task["acceptance_criteria"], list):
+                raise ValueError(
+                    f"Acceptance criteria for {task_id} must be a list."
+                )
+
+            if not isinstance(task["dependencies"], list):
+                raise ValueError(
+                    f"Dependencies for {task_id} must be a list."
+                )
+
+        for task in tasks:
+            unknown_dependencies = (
+                set(task["dependencies"]) - seen_ids
+            )
+
+            if unknown_dependencies:
+                raise ValueError(
+                    f"Task {task['task_id']} has unknown dependencies: "
+                    f"{sorted(unknown_dependencies)}"
+                )
+
+        return tasks
