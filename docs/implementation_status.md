@@ -24,6 +24,17 @@ The current workflow is designed to:
 
 Coding-agent implementation and later approval gates remain future work unless separately verified in the current codebase.
 
+## Official Backlog Decision (29 Oct 2026)
+
+For the prototype, the approved snapshot
+`outputs/approved_context/current_approved_context.json` (17 tasks, T1–T17)
+is the source of truth. Task IDs are frozen after H1 approval.
+GitHub Issues #24–#39 (16 issues) are out of date and will be re-synced
+later on purpose, not during testing.
+
+Test baseline (29 Oct 2026): `python -m pytest -q` → 63 passed, 1 skipped.
+
+
 ## 2. Implemented and Verified Components
 
 The following capabilities have been implemented in the project and were previously tested. Re-run the tests after code changes to confirm they still pass.
