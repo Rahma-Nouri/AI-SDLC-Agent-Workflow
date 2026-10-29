@@ -1,0 +1,530 @@
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -5,6 +5,7 @@
+ charset-normalizer==3.5.2
+ cryptography==50.0.2
+ distro==1.9.0
++fastapi==0.115.0
+ google-auth==2.61.0
+ google-genai==2.29.0
+ h11==0.16.0
+@@ -19,6 +20,7 @@
+ python-dotenv==1.2.4
+ requests==2.34.2
+ sniffio==1.3.1
++sqlalchemy==2.0.35
+ tenacity==9.1.4
+ typing-inspection==0.4.4
+ typing_extensions==4.16.0
+--- /dev/null
++++ b/pilot/app/backend/db.py
+@@ -0,0 +1,16 @@
++from sqlalchemy import create_engine
++from sqlalchemy.orm import declarative_base, sessionmaker
++
++DATABASE_URL = "sqlite:///:memory:"
++
++engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
++SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
++Base = declarative_base()
++
++
++def get_db():
++    db = SessionLocal()
++    try:
++        yield db
++    finally:
++        db.close()
+--- /dev/null
++++ b/pilot/app/backend/models.py
+@@ -0,0 +1,144 @@
++import uuid
++from datetime import datetime
++from sqlalchemy import (
++    Boolean,
++    Column,
++    DateTime,
++    Float,
++    ForeignKey,
++    Integer,
++    String,
++    Text,
++    UniqueConstraint,
++)
++from sqlalchemy.orm import relationship
++
++from pilot.app.backend.db import Base
++
++
++def generate_uuid() -> str:
++    return str(uuid.uuid4())
++
++
++class User(Base):
++    __tablename__ = "users"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    email = Column(String(255), unique=True, index=True, nullable=False)
++    password_hash = Column(String(255), nullable=True)
++    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
++
++    documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
++    generated_exams = relationship("GeneratedExam", back_populates="user", cascade="all, delete-orphan")
++    exam_sessions = relationship("ExamSession", back_populates="user", cascade="all, delete-orphan")
++    mastery_records = relationship("LongitudinalMastery", back_populates="user", cascade="all, delete-orphan")
++
++
++class Document(Base):
++    __tablename__ = "documents"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
++    title = Column(String(255), nullable=False)
++    doc_type = Column(String(50), nullable=False)
++    storage_path = Column(String(512), nullable=True)
++    parsed_text = Column(Text, nullable=True)
++    status = Column(String(30), default="PENDING", nullable=False)
++    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
++
++    user = relationship("User", back_populates="documents")
++    blueprints = relationship("ExamBlueprint", back_populates="source_document", cascade="all, delete-orphan")
++
++
++class ExamBlueprint(Base):
++    __tablename__ = "exam_blueprints"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    source_document_id = Column(String(36), ForeignKey("documents.id"), nullable=False, index=True)
++    blueprint_json = Column(Text, nullable=False)
++    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
++
++    source_document = relationship("Document", back_populates="blueprints")
++    generated_exams = relationship("GeneratedExam", back_populates="blueprint")
++
++
++class GeneratedExam(Base):
++    __tablename__ = "generated_exams"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
++    source_blueprint_id = Column(String(36), ForeignKey("exam_blueprints.id"), nullable=True, index=True)
++    title = Column(String(255), nullable=False)
++    is_adaptive = Column(Boolean, default=False, nullable=False)
++    status = Column(String(30), default="GENERATING", nullable=False)
++    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
++
++    user = relationship("User", back_populates="generated_exams")
++    blueprint = relationship("ExamBlueprint", back_populates="generated_exams")
++    questions = relationship("Question", back_populates="exam", cascade="all, delete-orphan")
++    sessions = relationship("ExamSession", back_populates="exam", cascade="all, delete-orphan")
++
++
++class Question(Base):
++    __tablename__ = "questions"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    exam_id = Column(String(36), ForeignKey("generated_exams.id"), nullable=False, index=True)
++    topic_id = Column(String(100), index=True, nullable=False)
++    question_type = Column(String(30), nullable=False)
++    difficulty = Column(String(20), nullable=False)
++    prompt = Column(Text, nullable=False)
++    options_json = Column(Text, nullable=True)
++    expected_answer = Column(Text, nullable=False)
++    grading_rubric = Column(Text, nullable=True)
++    points = Column(Integer, default=1, nullable=False)
++    similarity_score = Column(Float, nullable=True)
++
++    exam = relationship("GeneratedExam", back_populates="questions")
++    answers = relationship("ExamAnswer", back_populates="question")
++
++
++class ExamSession(Base):
++    __tablename__ = "exam_sessions"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    exam_id = Column(String(36), ForeignKey("generated_exams.id"), nullable=False, index=True)
++    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
++    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
++    submitted_at = Column(DateTime, nullable=True)
++    total_score = Column(Float, nullable=True)
++    max_possible_score = Column(Float, nullable=True)
++
++    exam = relationship("GeneratedExam", back_populates="sessions")
++    user = relationship("User", back_populates="exam_sessions")
++    answers = relationship("ExamAnswer", back_populates="session", cascade="all, delete-orphan")
++
++
++class ExamAnswer(Base):
++    __tablename__ = "exam_answers"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    session_id = Column(String(36), ForeignKey("exam_sessions.id"), nullable=False, index=True)
++    question_id = Column(String(36), ForeignKey("questions.id"), nullable=False, index=True)
++    student_response = Column(Text, nullable=True)
++    score_awarded = Column(Float, nullable=True)
++    feedback_text = Column(Text, nullable=True)
++    graded_at = Column(DateTime, nullable=True)
++
++    session = relationship("ExamSession", back_populates="answers")
++    question = relationship("Question", back_populates="answers")
++
++
++class LongitudinalMastery(Base):
++    __tablename__ = "longitudinal_mastery"
++    __table_args__ = (UniqueConstraint("user_id", "topic", name="uq_user_topic"),)
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
++    topic = Column(String(100), index=True, nullable=False)
++    total_attempts = Column(Integer, default=0, nullable=False)
++    successful_attempts = Column(Integer, default=0, nullable=False)
++    mastery_rating = Column(Float, default=0.0, nullable=False)
++    last_assessed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
++
++    user = relationship("User", back_populates="mastery_records")
+--- /dev/null
++++ b/pilot/app/backend/schemas.py
+@@ -0,0 +1,115 @@
++from datetime import datetime
++from typing import List, Optional
++from pydantic import BaseModel, Field
++
++
++class DocumentUploadAccepted(BaseModel):
++    document_id: str
++    status: str
++    message: str
++
++
++class DocumentResponse(BaseModel):
++    document_id: str
++    title: str
++    doc_type: str
++    status: str
++    extracted_char_count: Optional[int] = 0
++    created_at: datetime
++
++
++class JobAccepted(BaseModel):
++    job_id: str
++
++
++class JobStatusResponse(BaseModel):
++    job_id: str
++    status: str
++    progress_percentage: int = 0
++    result_id: Optional[str] = None
++    error: Optional[str] = None
++
++
++class ExamGenerationRequest(BaseModel):
++    source_blueprint_id: str
++    study_document_ids: List[str] = Field(default_factory=list)
++    adaptive_mode: bool = False
++
++
++class ExamQuestionItem(BaseModel):
++    question_id: str
++    sequence_order: int
++    question_type: str
++    prompt: str
++    options: Optional[List[str]] = None
++    points: int
++
++
++class ExamDetailResponse(BaseModel):
++    exam_id: str
++    title: str
++    total_questions: int
++    questions: List[ExamQuestionItem]
++
++
++class SessionStartResponse(BaseModel):
++    session_id: str
++    started_at: datetime
++
++
++class AnswerItem(BaseModel):
++    question_id: str
++    student_answer: str
++
++
++class SaveAnswersRequest(BaseModel):
++    answers: List[AnswerItem]
++
++
++class SaveAnswersResponse(BaseModel):
++    status: str
++    last_saved_at: datetime
++
++
++class EvaluationItem(BaseModel):
++    question_id: str
++    score: float
++    max_score: float
++    is_correct: bool
++    feedback: str
++
++
++class ExamReportResponse(BaseModel):
++    session_id: str
++    total_score: float
++    earned_score: float
++    evaluations: List[EvaluationItem]
++
++
++class StudySummaryRequest(BaseModel):
++    document_id: str
++    focus_topics: List[str] = Field(default_factory=list)
++
++
++class StudySummaryResponse(BaseModel):
++    summary: str
++    key_points: List[str]
++    formulas: List[str]
++
++
++class TopicMasteryItem(BaseModel):
++    topic: str
++    mastery_score: float
++    status: str
++
++
++class RemediationRecommendationItem(BaseModel):
++    topic: str
++    suggested_action: str
++    reference_document_id: str
++
++
++class ReadinessDiagnosticsResponse(BaseModel):
++    overall_readiness_percentage: float
++    topic_mastery: List[TopicMasteryItem]
++    recommendations: List[RemediationRecommendationItem]
+--- /dev/null
++++ b/pilot/app/backend/main.py
+@@ -0,0 +1,179 @@
++from fastapi import FastAPI, HTTPException, status
++from pilot.app.backend.db import Base, engine
++from pilot.app.backend.schemas import (
++    DocumentUploadAccepted,
++    DocumentResponse,
++    JobAccepted,
++    JobStatusResponse,
++    ExamGenerationRequest,
++    ExamDetailResponse,
++    SessionStartResponse,
++    SaveAnswersRequest,
++    SaveAnswersResponse,
++    ExamReportResponse,
++    StudySummaryRequest,
++    StudySummaryResponse,
++    ReadinessDiagnosticsResponse,
++)
++
++Base.metadata.create_all(bind=engine)
++
++app = FastAPI(
++    title="AI-Powered Adaptive Exam Preparation System API",
++    version="1.0.0",
++    description="OpenAPI service contracts for document ingestion, exam generation, assessment, and diagnostics.",
++)
++
++
++@app.get("/health", tags=["System"])
++def health_check():
++    return {"status": "ok"}
++
++
++@app.post(
++    "/api/v1/documents",
++    response_model=DocumentUploadAccepted,
++    status_code=status.HTTP_202_ACCEPTED,
++    tags=["Document Ingestion"],
++)
++def upload_document():
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Document upload pipeline not implemented in T1.",
++    )
++
++
++@app.get(
++    "/api/v1/documents/{document_id}",
++    response_model=DocumentResponse,
++    tags=["Document Ingestion"],
++)
++def get_document(document_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Document retrieval not implemented in T1.",
++    )
++
++
++@app.post(
++    "/api/v1/documents/{document_id}/decompose",
++    response_model=JobAccepted,
++    status_code=status.HTTP_202_ACCEPTED,
++    tags=["Exam Decomposition"],
++)
++def decompose_exam(document_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Decomposition pipeline not implemented in T1.",
++    )
++
++
++@app.get(
++    "/api/v1/jobs/{job_id}",
++    response_model=JobStatusResponse,
++    tags=["Jobs"],
++)
++def get_job_status(job_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Job polling not implemented in T1.",
++    )
++
++
++@app.post(
++    "/api/v1/exams/generate",
++    response_model=JobAccepted,
++    status_code=status.HTTP_202_ACCEPTED,
++    tags=["Exam Generation"],
++)
++def generate_exam(payload: ExamGenerationRequest):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Exam generation not implemented in T1.",
++    )
++
++
++@app.get(
++    "/api/v1/exams/{exam_id}",
++    response_model=ExamDetailResponse,
++    tags=["Exam Execution"],
++)
++def get_exam(exam_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Exam retrieval not implemented in T1.",
++    )
++
++
++@app.post(
++    "/api/v1/exams/{exam_id}/sessions",
++    response_model=SessionStartResponse,
++    status_code=status.HTTP_201_CREATED,
++    tags=["Exam Execution"],
++)
++def start_exam_session(exam_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Session creation not implemented in T1.",
++    )
++
++
++@app.put(
++    "/api/v1/exams/sessions/{session_id}/answers",
++    response_model=SaveAnswersResponse,
++    tags=["Exam Execution"],
++)
++def save_answers(session_id: str, payload: SaveAnswersRequest):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Answer persistence not implemented in T1.",
++    )
++
++
++@app.post(
++    "/api/v1/exams/sessions/{session_id}/submit",
++    response_model=JobAccepted,
++    status_code=status.HTTP_202_ACCEPTED,
++    tags=["Exam Execution"],
++)
++def submit_exam_session(session_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Exam submission not implemented in T1.",
++    )
++
++
++@app.get(
++    "/api/v1/exams/sessions/{session_id}/report",
++    response_model=ExamReportResponse,
++    tags=["Exam Execution"],
++)
++def get_session_report(session_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Session evaluation report not implemented in T1.",
++    )
++
++
++@app.post(
++    "/api/v1/study/summarize",
++    response_model=StudySummaryResponse,
++    tags=["Study Synthesis"],
++)
++def summarize_study_material(payload: StudySummaryRequest):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Study summarization not implemented in T1.",
++    )
++
++
++@app.get(
++    "/api/v1/diagnostics/readiness",
++    response_model=ReadinessDiagnosticsResponse,
++    tags=["Diagnostics"],
++)
++def get_readiness_diagnostics():
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Diagnostics calculation not implemented in T1.",
++    )
+--- /dev/null
++++ b/tests/test_backend_schema_and_openapi.py
+@@ -0,0 +1,43 @@
++from sqlalchemy import inspect
++from pilot.app.backend.db import Base, engine
++from pilot.app.backend.main import app
++
++
++def test_database_schema_initialization():
++    Base.metadata.create_all(bind=engine)
++    inspector = inspect(engine)
++    tables = set(inspector.get_table_names())
++    expected_tables = {
++        "users",
++        "documents",
++        "exam_blueprints",
++        "generated_exams",
++        "questions",
++        "exam_sessions",
++        "exam_answers",
++        "longitudinal_mastery",
++    }
++    assert expected_tables.issubset(tables)
++
++
++def test_openapi_contract_generation():
++    openapi_schema = app.openapi()
++    assert openapi_schema["info"]["title"] == "AI-Powered Adaptive Exam Preparation System API"
++    paths = openapi_schema["paths"]
++    expected_endpoints = [
++        "/health",
++        "/api/v1/documents",
++        "/api/v1/documents/{document_id}",
++        "/api/v1/documents/{document_id}/decompose",
++        "/api/v1/jobs/{job_id}",
++        "/api/v1/exams/generate",
++        "/api/v1/exams/{exam_id}",
++        "/api/v1/exams/{exam_id}/sessions",
++        "/api/v1/exams/sessions/{session_id}/answers",
++        "/api/v1/exams/sessions/{session_id}/submit",
++        "/api/v1/exams/sessions/{session_id}/report",
++        "/api/v1/study/summarize",
++        "/api/v1/diagnostics/readiness",
++    ]
++    for endpoint in expected_endpoints:
++        assert endpoint in paths

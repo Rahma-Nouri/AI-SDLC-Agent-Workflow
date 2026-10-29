@@ -1,0 +1,669 @@
+diff --git a/pilot/app/backend/__init__.py b/pilot/app/backend/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/pilot/app/backend/__init__.py
+@@ -0,0 +1,3 @@
++"""Backend package for the AI-Powered Adaptive Exam Preparation System."""
++
++__version__ = "0.1.0"
+diff --git a/pilot/app/backend/db.py b/pilot/app/backend/db.py
+new file mode 100644
+--- /dev/null
++++ b/pilot/app/backend/db.py
+@@ -0,0 +1,41 @@
++"""Database connection and initialization utilities."""
++
++from pathlib import Path
++import sqlite3
++from typing import Optional
++
++SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
++
++
++def get_connection(db_path: str = "pilot_exam.db") -> sqlite3.Connection:
++    """Create and return a SQLite connection with foreign keys enabled."""
++    conn = sqlite3.connect(db_path)
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys = ON;")
++    return conn
++
++
++def init_db(db_path: str = "pilot_exam.db", schema_file: Optional[Path] = None) -> sqlite3.Connection:
++    """Execute DDL schema to initialize all required database tables."""
++    path_to_schema = schema_file or SCHEMA_PATH
++    if not path_to_schema.exists():
++        raise FileNotFoundError(f"Schema file not found at {path_to_schema}")
++
++    with open(path_to_schema, "r", encoding="utf-8") as f:
++        schema_sql = f.read()
++
++    conn = get_connection(db_path)
++    with conn:
++        conn.executescript(schema_sql)
++    return conn
++
++
++def get_table_names(conn: sqlite3.Connection) -> list[str]:
++    """Return list of existing table names in the database."""
++    cursor = conn.execute(
++        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
++    )
++    return [row[0] for row in cursor.fetchall()]
+diff --git a/pilot/app/backend/openapi.json b/pilot/app/backend/openapi.json
+new file mode 100644
+--- /dev/null
++++ b/pilot/app/backend/openapi.json
+@@ -0,0 +1,289 @@
++{
++  "openapi": "3.0.3",
++  "info": {
++    "title": "AI-Powered Adaptive Exam Preparation System API",
++    "version": "1.0.0",
++    "description": "API service contracts for document processing, exam generation, evaluation, and adaptive mastery tracking."
++  },
++  "paths": {
++    "/api/v1/documents": {
++      "post": {
++        "summary": "Upload study material or exam paper",
++        "requestBody": {
++          "required": true,
++          "content": {
++            "multipart/form-data": {
++              "schema": {
++                "type": "object",
++                "required": ["file", "doc_type", "title"],
++                "properties": {
++                  "file": {"type": "string", "format": "binary"},
++                  "doc_type": {"type": "string", "enum": ["EXAM_SAMPLE", "LECTURE_NOTE", "SLIDE_DECK"]},
++                  "title": {"type": "string"}
++                }
++              }
++            }
++          }
++        },
++        "responses": {
++          "202": {
++            "description": "File accepted for processing",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "document_id": {"type": "string"},
++                    "status": {"type": "string"},
++                    "message": {"type": "string"}
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/documents/{document_id}": {
++      "get": {
++        "summary": "Get document status and metadata",
++        "parameters": [
++          {"name": "document_id", "in": "path", "required": true, "schema": {"type": "string"}}
++        ],
++        "responses": {
++          "200": {
++            "description": "Document details",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "document_id": {"type": "string"},
++                    "title": {"type": "string"},
++                    "doc_type": {"type": "string"},
++                    "status": {"type": "string"},
++                    "extracted_char_count": {"type": "integer"},
++                    "created_at": {"type": "string", "format": "date-time"}
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/documents/{document_id}/decompose": {
++      "post": {
++        "summary": "Trigger pedagogical blueprint extraction",
++        "parameters": [
++          {"name": "document_id", "in": "path", "required": true, "schema": {"type": "string"}}
++        ],
++        "responses": {
++          "202": {
++            "description": "Decomposition job initiated",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "job_id": {"type": "string"}
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/jobs/{job_id}": {
++      "get": {
++        "summary": "Poll status of an asynchronous background job",
++        "parameters": [
++          {"name": "job_id", "in": "path", "required": true, "schema": {"type": "string"}}
++        ],
++        "responses": {
++          "200": {
++            "description": "Job status details",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "job_id": {"type": "string"},
++                    "status": {"type": "string"},
++                    "progress_percentage": {"type": "integer"},
++                    "result_id": {"type": "string", "nullable": true},
++                    "error": {"type": "string", "nullable": true}
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/exams/generate": {
++      "post": {
++        "summary": "Generate a novel practice exam",
++        "requestBody": {
++          "required": true,
++          "content": {
++            "application/json": {
++              "schema": {
++                "type": "object",
++                "properties": {
++                  "source_blueprint_id": {"type": "string", "nullable": true},
++                  "study_document_ids": {"type": "array", "items": {"type": "string"}},
++                  "adaptive_mode": {"type": "boolean"}
++                }
++              }
++            }
++          }
++        },
++        "responses": {
++          "202": {
++            "description": "Exam generation queued",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "job_id": {"type": "string"}
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/exams/{exam_id}": {
++      "get": {
++        "summary": "Retrieve practice exam structure for taking the test",
++        "parameters": [
++          {"name": "exam_id", "in": "path", "required": true, "schema": {"type": "string"}}
++        ],
++        "responses": {
++          "200": {
++            "description": "Exam details without revealed correct answers",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "exam_id": {"type": "string"},
++                    "title": {"type": "string"},
++                    "total_questions": {"type": "integer"},
++                    "questions": {
++                      "type": "array",
++                      "items": {
++                        "type": "object",
++                        "properties": {
++                          "question_id": {"type": "string"},
++                          "sequence_order": {"type": "integer"},
++                          "question_type": {"type": "string"},
++                          "prompt": {"type": "string"},
++                          "options": {"type": "array", "items": {"type": "string"}, "nullable": true},
++                          "points": {"type": "integer"}
++                        }
++                      }
++                    }
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/exams/{exam_id}/sessions": {
++      "post": {
++        "summary": "Initiate active exam session",
++        "parameters": [
++          {"name": "exam_id", "in": "path", "required": true, "schema": {"type": "string"}}
++        ],
++        "responses": {
++          "201": {
++            "description": "Exam session initialized",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "session_id": {"type": "string"},
++                    "started_at": {"type": "string", "format": "date-time"}
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/exams/sessions/{session_id}/answers": {
++      "put": {
++        "summary": "Save in-progress student answers incrementally",
++        "parameters": [
++          {"name": "session_id", "in": "path", "required": true, "schema": {"type": "string"}}
++        ],
++        "requestBody": {
++          "required": true,
++          "content": {
++            "application/json": {
++              "schema": {
++                "type": "object",
++                "properties": {
++                  "answers": {
++                    "type": "array",
++                    "items": {
++                      "type": "object",
++                      "properties": {
++                        "question_id": {"type": "string"},
++                        "student_answer": {"type": "string"}
++                      }
++                    }
++                  }
++                }
++              }
++            }
++          }
++        },
++        "responses": {
++          "200": {
++            "description": "Answers saved",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "status": {"type": "string"},
++                    "last_saved_at": {"type": "string", "format": "date-time"}
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/exams/sessions/{session_id}/submit": {
++      "post": {
++        "summary": "Finalize session and trigger evaluation",
++        "parameters": [
++          {"name": "session_id", "in": "path", "required": true, "schema": {"type": "string"}}
++        ],
++        "responses": {
++          "202": {
++            "description": "Evaluation job queued",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "job_id": {"type": "string"}
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/exams/sessions/{session_id}/report": {
++      "get": {
++        "summary": "Retrieve graded report and formative feedback",
++        "parameters": [
++          {"name": "session_id", "in": "path", "required": true, "schema": {"type": "string"}}
++        ],
++        "responses": {
++          "200": {
++            "description": "Evaluated report",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "session_id": {"type": "string"},
++                    "total_score": {"type": "number"},
++                    "earned_score": {"type": "number"},
++                    "evaluations": {
++                      "type": "array",
++                      "items": {
++                        "type": "object",
++                        "properties": {
++                          "question_id": {"type": "string"},
++                          "score": {"type": "number"},
++                          "max_score": {"type": "number"},
++                          "is_correct": {"type": "boolean"},
++                          "feedback": {"type": "string"}
++                        }
++                      }
++                    }
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/study/summarize": {
++      "post": {
++        "summary": "Generate structured summary and key points",
++        "requestBody": {
++          "required": true,
++          "content": {
++            "application/json": {
++              "schema": {
++                "type": "object",
++                "required": ["document_id"],
++                "properties": {
++                  "document_id": {"type": "string"},
++                  "focus_topics": {"type": "array", "items": {"type": "string"}}
++                }
++              }
++            }
++          }
++        },
++        "responses": {
++          "200": {
++            "description": "Extracted summary and key points",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "summary": {"type": "string"},
++                    "key_points": {"type": "array", "items": {"type": "string"}},
++                    "formulas": {"type": "array", "items": {"type": "string"}}
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    "/api/v1/diagnostics/readiness": {
++      "get": {
++        "summary": "Retrieve topic mastery and readiness diagnostics",
++        "responses": {
++          "200": {
++            "description": "Readiness dashboard metrics",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "overall_readiness_percentage": {"type": "number"},
++                    "topic_mastery": {
++                      "type": "array",
++                      "items": {
++                        "type": "object",
++                        "properties": {
++                          "topic": {"type": "string"},
++                          "mastery_score": {"type": "number"},
++                          "status": {"type": "string"}
++                        }
++                      }
++                    },
++                    "recommendations": {
++                      "type": "array",
++                      "items": {
++                        "type": "object",
++                        "properties": {
++                          "topic": {"type": "string"},
++                          "suggested_action": {"type": "string"},
++                          "reference_document_id": {"type": "string"}
++                        }
++                      }
++                    }
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    }
++  }
++}
+diff --git a/pilot/app/backend/schema.sql b/pilot/app/backend/schema.sql
+new file mode 100644
+--- /dev/null
++++ b/pilot/app/backend/schema.sql
+@@ -0,0 +1,78 @@
++-- Relational Database Schema for AI-Powered Adaptive Exam Preparation System
++-- Architecture Specification Section 5.2
++
++CREATE TABLE IF NOT EXISTS users (
++    id TEXT PRIMARY KEY,
++    email TEXT UNIQUE NOT NULL,
++    password_hash TEXT,
++    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
++
++CREATE TABLE IF NOT EXISTS documents (
++    id TEXT PRIMARY KEY,
++    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++    title TEXT NOT NULL,
++    doc_type TEXT NOT NULL CHECK(doc_type IN ('EXAM_SAMPLE', 'LECTURE_NOTE', 'SLIDE_DECK')),
++    storage_path TEXT NOT NULL,
++    parsed_text TEXT,
++    status TEXT NOT NULL CHECK(status IN ('PENDING', 'PARSED', 'FAILED')),
++    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents(user_id);
++
++CREATE TABLE IF NOT EXISTS exam_blueprints (
++    id TEXT PRIMARY KEY,
++    source_document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
++    blueprint_json TEXT NOT NULL,
++    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE INDEX IF NOT EXISTS idx_exam_blueprints_source_doc ON exam_blueprints(source_document_id);
++
++CREATE TABLE IF NOT EXISTS generated_exams (
++    id TEXT PRIMARY KEY,
++    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++    source_blueprint_id TEXT REFERENCES exam_blueprints(id) ON DELETE SET NULL,
++    title TEXT NOT NULL,
++    is_adaptive INTEGER NOT NULL DEFAULT 0 CHECK(is_adaptive IN (0, 1)),
++    status TEXT NOT NULL CHECK(status IN ('GENERATING', 'READY', 'FAILED')),
++    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE INDEX IF NOT EXISTS idx_generated_exams_user_id ON generated_exams(user_id);
++
++CREATE TABLE IF NOT EXISTS questions (
++    id TEXT PRIMARY KEY,
++    exam_id TEXT NOT NULL REFERENCES generated_exams(id) ON DELETE CASCADE,
++    topic_id TEXT NOT NULL,
++    question_type TEXT NOT NULL CHECK(question_type IN ('MULTIPLE_CHOICE', 'SHORT_ANSWER', 'ESSAY')),
++    difficulty TEXT NOT NULL CHECK(difficulty IN ('BASIC', 'INTERMEDIATE', 'ADVANCED')),
++    prompt TEXT NOT NULL,
++    options_json TEXT,
++    expected_answer TEXT NOT NULL,
++    grading_rubric TEXT,
++    points INTEGER NOT NULL DEFAULT 1,
++    similarity_score REAL
++);
++CREATE INDEX IF NOT EXISTS idx_questions_exam_id ON questions(exam_id);
++CREATE INDEX IF NOT EXISTS idx_questions_topic_id ON questions(topic_id);
++
++CREATE TABLE IF NOT EXISTS exam_sessions (
++    id TEXT PRIMARY KEY,
++    exam_id TEXT NOT NULL REFERENCES generated_exams(id) ON DELETE CASCADE,
++    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++    started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
++    submitted_at TIMESTAMP,
++    total_score REAL,
++    max_possible_score REAL
++);
++CREATE INDEX IF NOT EXISTS idx_exam_sessions_exam_id ON exam_sessions(exam_id);
++CREATE INDEX IF NOT EXISTS idx_exam_sessions_user_id ON exam_sessions(user_id);
++
++CREATE TABLE IF NOT EXISTS exam_answers (
++    id TEXT PRIMARY KEY,
++    session_id TEXT NOT NULL REFERENCES exam_sessions(id) ON DELETE CASCADE,
++    question_id TEXT NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
++    student_response TEXT NOT NULL,
++    score_awarded REAL,
++    feedback_text TEXT,
++    graded_at TIMESTAMP
++);
++CREATE INDEX IF NOT EXISTS idx_exam_answers_session_id ON exam_answers(session_id);
++CREATE INDEX IF NOT EXISTS idx_exam_answers_question_id ON exam_answers(question_id);
++
++CREATE TABLE IF NOT EXISTS longitudinal_mastery (
++    id TEXT PRIMARY KEY,
++    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++    topic TEXT NOT NULL,
++    total_attempts INTEGER NOT NULL DEFAULT 0,
++    successful_attempts INTEGER NOT NULL DEFAULT 0,
++    mastery_rating REAL NOT NULL DEFAULT 0.0 CHECK(mastery_rating >= 0.0 AND mastery_rating <= 1.0),
++    last_assessed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
++    CONSTRAINT uq_user_topic UNIQUE (user_id, topic)
++);
++CREATE INDEX IF NOT EXISTS idx_longitudinal_mastery_user_topic ON longitudinal_mastery(user_id, topic);
+diff --git a/tests/test_backend_schema.py b/tests/test_backend_schema.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_backend_schema.py
+@@ -0,0 +1,93 @@
++"""Unit tests for backend database schema and OpenAPI contract specifications."""
++
++import json
++from pathlib import Path
++import sqlite3
++import unittest
++
++from pilot.app.backend.db import init_db, get_table_names
++
++
++class TestBackendSchema(unittest.TestCase):
++    """Validate SQL schema creation, relational integrity, and OpenAPI specifications."""
++
++    def setUp(self):
++        self.conn = init_db(":memory:")
++
++    def tearDown(self):
++        self.conn.close()
++
++    def test_schema_creates_all_expected_tables(self):
++        tables = set(get_table_names(self.conn))
++        expected_tables = {
++            "users",
++            "documents",
++            "exam_blueprints",
++            "generated_exams",
++            "questions",
++            "exam_sessions",
++            "exam_answers",
++            "longitudinal_mastery",
++        }
++        self.assertTrue(expected_tables.issubset(tables), f"Missing tables: {expected_tables - tables}")
++
++    def test_foreign_key_and_check_constraints(self):
++        # Insert user
++        self.conn.execute(
++            "INSERT INTO users (id, email) VALUES (?, ?);",
++            ("u-1", "student@example.edu"),
++        )
++        # Insert document
++        self.conn.execute(
++            """INSERT INTO documents (id, user_id, title, doc_type, storage_path, status)
++               VALUES (?, ?, ?, ?, ?, ?);""",
++            ("doc-1", "u-1", "Midterm.pdf", "EXAM_SAMPLE", "/storage/Midterm.pdf", "PENDING"),
++        )
++        # Check constraint violation on invalid doc_type
++        with self.assertRaises(sqlite3.IntegrityError):
++            self.conn.execute(
++                """INSERT INTO documents (id, user_id, title, doc_type, storage_path, status)
++                   VALUES (?, ?, ?, ?, ?, ?);""",
++                ("doc-2", "u-1", "Invalid.pdf", "INVALID_TYPE", "/storage/Invalid.pdf", "PENDING"),
++            )
++
++    def test_longitudinal_mastery_unique_constraint(self):
++        self.conn.execute(
++            "INSERT INTO users (id, email) VALUES (?, ?);",
++            ("u-2", "user2@example.edu"),
++        )
++        self.conn.execute(
++            """INSERT INTO longitudinal_mastery (id, user_id, topic, total_attempts, successful_attempts, mastery_rating)
++               VALUES (?, ?, ?, ?, ?, ?);""",
++            ("lm-1", "u-2", "Virtual Memory", 10, 8, 0.8),
++        )
++        # Violate unique (user_id, topic)
++        with self.assertRaises(sqlite3.IntegrityError):
++            self.conn.execute(
++                """INSERT INTO longitudinal_mastery (id, user_id, topic, total_attempts, successful_attempts, mastery_rating)
++                   VALUES (?, ?, ?, ?, ?, ?);""",
++                ("lm-2", "u-2", "Virtual Memory", 5, 2, 0.4),
++            )
++
++    def test_openapi_spec_structure(self):
++        openapi_path = Path(__file__).resolve().parent.parent / "pilot" / "app" / "backend" / "openapi.json"
++        self.assertTrue(openapi_path.exists(), f"openapi.json not found at {openapi_path}")
++
++        with open(openapi_path, "r", encoding="utf-8") as f:
++            spec = json.load(f)
++
++        self.assertEqual(spec.get("openapi"), "3.0.3")
++        paths = spec.get("paths", {})
++        required_paths = [
++            "/api/v1/documents",
++            "/api/v1/documents/{document_id}",
++            "/api/v1/documents/{document_id}/decompose",
++            "/api/v1/jobs/{job_id}",
++            "/api/v1/exams/generate",
++            "/api/v1/exams/{exam_id}",
++            "/api/v1/exams/{exam_id}/sessions",
++            "/api/v1/exams/sessions/{session_id}/answers",
++            "/api/v1/exams/sessions/{session_id}/submit",
++            "/api/v1/exams/sessions/{session_id}/report",
++            "/api/v1/study/summarize",
++            "/api/v1/diagnostics/readiness",
++        ]
++        for endpoint in required_paths:
++            self.assertIn(endpoint, paths, f"Endpoint {endpoint} missing in OpenAPI specification")
++
++
++if __name__ == "__main__":
++    unittest.main()

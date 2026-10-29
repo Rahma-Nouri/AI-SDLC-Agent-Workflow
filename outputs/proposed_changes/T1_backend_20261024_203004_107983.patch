@@ -1,0 +1,509 @@
+--- /dev/null
++++ b/pilot/app/backend/__init__.py
+@@ -0,0 +1,5 @@
++"""Backend application package for AI-Powered Adaptive Exam Preparation System."""
++
++__version__ = "0.1.0"
++
++__all__ = ["models", "schemas", "app"]
+--- /dev/null
++++ b/pilot/app/backend/models.py
+@@ -0,0 +1,97 @@
++"""SQLAlchemy ORM models defining the database schema."""
++
++from datetime import datetime, timezone
++from sqlalchemy import (
++    Column,
++    DateTime,
++    Float,
++    ForeignKey,
++    Integer,
++    JSON,
++    String,
++    Text,
++)
++from sqlalchemy.orm import declarative_base, relationship
++
++Base = declarative_base()
++
++
++class Document(Base):
++    __tablename__ = "documents"
++
++    id = Column(String, primary_key=True, index=True)
++    doc_type = Column(String, nullable=False)  # "sample_exam", "lecture_note", "slides"
++    raw_text_path = Column(String, nullable=True)
++    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
++
++    blueprints = relationship("ExamBlueprint", back_populates="source_document")
++    summaries = relationship("MaterialSummary", back_populates="document")
++
++
++class ExamBlueprint(Base):
++    __tablename__ = "exam_blueprints"
++
++    id = Column(String, primary_key=True, index=True)
++    source_doc_id = Column(String, ForeignKey("documents.id"), nullable=False)
++    blueprint_schema = Column(JSON, nullable=False)
++    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
++
++    source_document = relationship("Document", back_populates="blueprints")
++    generated_exams = relationship("GeneratedExam", back_populates="blueprint")
++
++
++class MaterialSummary(Base):
++    __tablename__ = "material_summaries"
++
++    id = Column(String, primary_key=True, index=True)
++    document_id = Column(String, ForeignKey("documents.id"), nullable=False)
++    summary_text = Column(Text, nullable=False)
++    key_points = Column(JSON, nullable=True)
++    formulas = Column(JSON, nullable=True)
++    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
++
++    document = relationship("Document", back_populates="summaries")
++
++
++class GeneratedExam(Base):
++    __tablename__ = "generated_exams"
++
++    id = Column(String, primary_key=True, index=True)
++    blueprint_id = Column(String, ForeignKey("exam_blueprints.id"), nullable=False)
++    title = Column(String, nullable=False)
++    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
++
++    blueprint = relationship("ExamBlueprint", back_populates="generated_exams")
++    questions = relationship("Question", back_populates="exam", cascade="all, delete-orphan")
++    attempts = relationship("ExamAttempt", back_populates="exam")
++
++
++class Question(Base):
++    __tablename__ = "questions"
++
++    id = Column(String, primary_key=True, index=True)
++    exam_id = Column(String, ForeignKey("generated_exams.id"), nullable=False)
++    topic_id = Column(String, nullable=False, index=True)
++    question_type = Column(String, nullable=False)  # "MULTIPLE_CHOICE", "SHORT_ANSWER"
++    prompt = Column(Text, nullable=False)
++    options = Column(JSON, nullable=True)
++    solution_rubric = Column(Text, nullable=True)
++    max_points = Column(Float, nullable=False, default=1.0)
++
++    exam = relationship("GeneratedExam", back_populates="questions")
++    responses = relationship("QuestionResponse", back_populates="question")
++
++
++class ExamAttempt(Base):
++    __tablename__ = "exam_attempts"
++
++    id = Column(String, primary_key=True, index=True)
++    exam_id = Column(String, ForeignKey("generated_exams.id"), nullable=False)
++    student_id = Column(String, nullable=False, index=True)
++    total_score = Column(Float, nullable=True)
++    submitted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
++
++    exam = relationship("GeneratedExam", back_populates="attempts")
++    responses = relationship("QuestionResponse", back_populates="attempt", cascade="all, delete-orphan")
++
++
++class QuestionResponse(Base):
++    __tablename__ = "question_responses"
++
++    id = Column(String, primary_key=True, index=True)
++    attempt_id = Column(String, ForeignKey("exam_attempts.id"), nullable=False)
++    question_id = Column(String, ForeignKey("questions.id"), nullable=False)
++    student_answer = Column(Text, nullable=True)
++    score_awarded = Column(Float, nullable=True)
++    feedback_text = Column(Text, nullable=True)
++
++    attempt = relationship("ExamAttempt", back_populates="responses")
++    question = relationship("Question", back_populates="responses")
++
++
++class StudentTopicMastery(Base):
++    __tablename__ = "student_topic_mastery"
++
++    id = Column(String, primary_key=True, index=True)
++    student_id = Column(String, nullable=False, index=True)
++    topic_id = Column(String, nullable=False, index=True)
++    attempts_count = Column(Integer, default=0, nullable=False)
++    correct_count = Column(Integer, default=0, nullable=False)
++    mastery_level = Column(Float, default=0.0, nullable=False)
++    last_evaluated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+--- /dev/null
++++ b/pilot/app/backend/schemas.py
+@@ -0,0 +1,93 @@
++"""Pydantic schemas establishing strict API contracts."""
++
++from typing import List, Optional
++from pydantic import BaseModel, Field
++
++
++class TaskResponse(BaseModel):
++    task_id: str
++    status: str
++
++
++class DocumentUploadResponse(BaseModel):
++    task_id: str
++    status: str
++    document_id: str
++
++
++class TaskStatusResponse(BaseModel):
++    task_id: str
++    status: str
++    progress_percentage: int
++    result_reference_id: Optional[str] = None
++    error_message: Optional[str] = None
++
++
++class BlueprintAnalyzeRequest(BaseModel):
++    document_id: str
++
++
++class TopicDefinition(BaseModel):
++    topic_id: str
++    name: str
++    weight_percentage: float
++
++
++class QuestionBreakdown(BaseModel):
++    topic_id: str
++    question_type: str
++    count: int
++    difficulty: str
++
++
++class BlueprintResponse(BaseModel):
++    blueprint_id: str
++    source_document_id: str
++    exam_title: str
++    estimated_time_minutes: int
++    topics: List[TopicDefinition]
++    question_breakdown: List[QuestionBreakdown]
++
++
++class ExamGenerateRequest(BaseModel):
++    blueprint_id: str
++    study_material_ids: List[str] = Field(default_factory=list)
++    mode: str = "STANDARD"
++
++
++class PracticeQuestionItem(BaseModel):
++    question_id: str
++    topic_id: str
++    question_type: str
++    difficulty: str
++    prompt: str
++    options: Optional[List[str]] = None
++    max_points: float
++
++
++class PracticeExamResponse(BaseModel):
++    exam_id: str
++    blueprint_id: str
++    title: str
++    questions: List[PracticeQuestionItem]
++
++
++class StudentQuestionResponseItem(BaseModel):
++    question_id: str
++    selected_option_index: Optional[int] = None
++    text_answer: Optional[str] = None
++
++
++class ExamSubmissionRequest(BaseModel):
++    exam_id: str
++    responses: List[StudentQuestionResponseItem]
++
++
++class QuestionEvaluationItem(BaseModel):
++    question_id: str
++    is_correct: bool
++    points_awarded: float
++    feedback: str
++
++
++class ExamEvaluationResponse(BaseModel):
++    attempt_id: str
++    exam_id: str
++    score_achieved: float
++    total_possible: float
++    evaluations: List[QuestionEvaluationItem]
++
++
++class MaterialSummaryResponse(BaseModel):
++    document_id: str
++    summary: str
++    key_points: List[str]
++    formulas: List[str]
++
++
++class TopicMasteryItem(BaseModel):
++    topic_id: str
++    topic_name: str
++    mastery_percentage: float
++    status: str
++
++
++class ReadinessResponse(BaseModel):
++    overall_readiness_score: float
++    topic_mastery: List[TopicMasteryItem]
++    recommended_focus_topic_id: Optional[str] = None
+--- /dev/null
++++ b/pilot/app/backend/app.py
+@@ -0,0 +1,102 @@
++"""FastAPI Application defining API routes and contract signatures."""
++
++from typing import Optional
++from fastapi import FastAPI, File, Form, Header, UploadFile, status
++from pilot.app.backend.schemas import (
++    BlueprintAnalyzeRequest,
++    BlueprintResponse,
++    DocumentUploadResponse,
++    ExamEvaluationResponse,
++    ExamGenerateRequest,
++    ExamSubmissionRequest,
++    MaterialSummaryResponse,
++    PracticeExamResponse,
++    ReadinessResponse,
++    TaskResponse,
++    TaskStatusResponse,
++)
++
++app = FastAPI(
++    title="AI-Powered Adaptive Exam Preparation API",
++    version="0.1.0",
++    description="API Gateway and service contracts for the exam preparation system.",
++)
++
++
++@app.post(
++    "/api/v1/documents/upload",
++    response_model=DocumentUploadResponse,
++    status_code=status.HTTP_202_ACCEPTED,
++    tags=["Document Ingestion"],
++)
++async def upload_document(
++    file: UploadFile = File(...),
++    document_type: str = Form(...),
++    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
++):
++    """Accepts document upload and enqueues parsing task."""
++    return DocumentUploadResponse(
++        task_id="task_pending",
++        status="PROCESSING",
++        document_id="doc_pending",
++    )
++
++
++@app.get(
++    "/api/v1/tasks/{task_id}",
++    response_model=TaskStatusResponse,
++    tags=["Task Orchestration"],
++)
++async def get_task_status(task_id: str):
++    """Checks status of an asynchronous background task."""
++    return TaskStatusResponse(
++        task_id=task_id,
++        status="PENDING",
++        progress_percentage=0,
++    )
++
++
++@app.post(
++    "/api/v1/blueprints/analyze",
++    response_model=TaskResponse,
++    status_code=status.HTTP_202_ACCEPTED,
++    tags=["Blueprint & Analysis"],
++)
++async def analyze_blueprint(request: BlueprintAnalyzeRequest):
++    """Triggers structural analysis on ingested exam document."""
++    return TaskResponse(task_id="task_pending", status="PROCESSING")
++
++
++@app.get(
++    "/api/v1/blueprints/{blueprint_id}",
++    response_model=BlueprintResponse,
++    tags=["Blueprint & Analysis"],
++)
++async def get_blueprint(blueprint_id: str):
++    """Retrieves blueprint definition by ID."""
++    raise NotImplementedError("Contract defined; implementation in T4.")
++
++
++@app.post(
++    "/api/v1/exams/generate",
++    response_model=TaskResponse,
++    status_code=status.HTTP_202_ACCEPTED,
++    tags=["Practice Exam Generation"],
++)
++async def generate_exam(request: ExamGenerateRequest):
++    """Enqueues novel practice exam generation task."""
++    return TaskResponse(task_id="task_pending", status="PROCESSING")
++
++
++@app.get(
++    "/api/v1/exams/{exam_id}",
++    response_model=PracticeExamResponse,
++    tags=["Practice Exam Generation"],
++)
++async def get_exam(exam_id: str):
++    """Fetches generated practice exam payload."""
++    raise NotImplementedError("Contract defined; implementation in T5.")
++
++
++@app.post(
++    "/api/v1/exams/{exam_id}/submit",
++    response_model=ExamEvaluationResponse,
++    tags=["Evaluation & Feedback"],
++)
++async def submit_exam(exam_id: str, submission: ExamSubmissionRequest):
++    """Submits student exam responses for evaluation."""
++    raise NotImplementedError("Contract defined; implementation in T7.")
++
++
++@app.post(
++    "/api/v1/materials/{document_id}/summarize",
++    response_model=MaterialSummaryResponse,
++    tags=["Extended Study Materials"],
++)
++async def summarize_material(document_id: str):
++    """Generates summaries, formulas, and key points from study material."""
++    raise NotImplementedError("Contract defined; implementation in T10.")
++
++
++@app.get(
++    "/api/v1/diagnostics/readiness",
++    response_model=ReadinessResponse,
++    tags=["Diagnostics & Calibration"],
++)
++async def get_readiness(
++    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
++):
++    """Retrieves topic mastery and exam readiness indicators."""
++    raise NotImplementedError("Contract defined; implementation in T12.")
+--- /dev/null
++++ b/tests/test_backend_api_contracts.py
+@@ -0,0 +1,114 @@
++"""Unit tests verifying backend data models, Pydantic schemas, and API contracts."""
++
++from pilot.app.backend.models import (
++    Base,
++    Document,
++    ExamBlueprint,
++    MaterialSummary,
++    GeneratedExam,
++    Question,
++    ExamAttempt,
++    QuestionResponse,
++    StudentTopicMastery,
++)
++from pilot.app.backend.schemas import (
++    DocumentUploadResponse,
++    TaskStatusResponse,
++    BlueprintResponse,
++    PracticeExamResponse,
++    ExamSubmissionRequest,
++    ExamEvaluationResponse,
++    MaterialSummaryResponse,
++    ReadinessResponse,
++)
++from pilot.app.backend.app import app
++
++
++def test_database_model_tables_registered():
++    expected_tables = {
++        "documents",
++        "exam_blueprints",
++        "material_summaries",
++        "generated_exams",
++        "questions",
++        "exam_attempts",
++        "question_responses",
++        "student_topic_mastery",
++    }
++    actual_tables = set(Base.metadata.tables.keys())
++    assert expected_tables.issubset(actual_tables)
++
++
++def test_pydantic_schema_serialization():
++    doc_resp = DocumentUploadResponse(
++        task_id="task_doc_89a7fbc2",
++        status="PROCESSING",
++        document_id="doc_550e8400",
++    )
++    assert doc_resp.task_id == "task_doc_89a7fbc2"
++
++    task_resp = TaskStatusResponse(
++        task_id="task_doc_89a7fbc2",
++        status="SUCCESS",
++        progress_percentage=100,
++        result_reference_id="doc_550e8400",
++        error_message=None,
++    )
++    assert task_resp.status == "SUCCESS"
++
++    bp_resp = BlueprintResponse(
++        blueprint_id="bp_4a11b6c8",
++        source_document_id="doc_550e8400",
++        exam_title="Intro to OS",
++        estimated_time_minutes=60,
++        topics=[
++            {"topic_id": "t1", "name": "Sync", "weight_percentage": 40.0},
++            {"topic_id": "t2", "name": "Memory", "weight_percentage": 60.0},
++        ],
++        question_breakdown=[
++            {"topic_id": "t1", "question_type": "MULTIPLE_CHOICE", "count": 2, "difficulty": "INTERMEDIATE"},
++        ],
++    )
++    assert len(bp_resp.topics) == 2
++
++    practice_exam = PracticeExamResponse(
++        exam_id="exam_7c9e6679",
++        blueprint_id="bp_4a11b6c8",
++        title="Practice Exam",
++        questions=[
++            {
++                "question_id": "q_001",
++                "topic_id": "t1",
++                "question_type": "MULTIPLE_CHOICE",
++                "difficulty": "INTERMEDIATE",
++                "prompt": "Sample prompt",
++                "options": ["A", "B"],
++                "max_points": 5.0,
++            }
++        ],
++    )
++    assert practice_exam.questions[0].max_points == 5.0
++
++    eval_resp = ExamEvaluationResponse(
++        attempt_id="att_88b12e34",
++        exam_id="exam_7c9e6679",
++        score_achieved=14.0,
++        total_possible=15.0,
++        evaluations=[
++            {
++                "question_id": "q_001",
++                "is_correct": True,
++                "points_awarded": 5.0,
++                "feedback": "Correct",
++            }
++        ],
++    )
++    assert eval_resp.score_achieved == 14.0
++
++
++def test_openapi_schema_contains_all_api_contracts():
++    openapi = app.openapi()
++    paths = openapi.get("paths", {})
++    assert "/api/v1/documents/upload" in paths
++    assert "/api/v1/tasks/{task_id}" in paths
++    assert "/api/v1/blueprints/analyze" in paths
++    assert "/api/v1/blueprints/{blueprint_id}" in paths
++    assert "/api/v1/exams/generate" in paths
++    assert "/api/v1/exams/{exam_id}" in paths
++    assert "/api/v1/exams/{exam_id}/submit" in paths
++    assert "/api/v1/materials/{document_id}/summarize" in paths
++    assert "/api/v1/diagnostics/readiness" in paths
