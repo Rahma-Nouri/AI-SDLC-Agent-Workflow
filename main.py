@@ -325,7 +325,10 @@ def create_t1_backend_patch(
     patch_path = output_dir / f"T1_backend_{timestamp}.patch"
     report_path = output_dir / f"T1_backend_{timestamp}_report.json"
 
-    patch_path.write_text(result.patch, encoding="utf-8")
+    # Write the patch with LF ("\n") line endings on every operating system.
+    # Without newline="\n", Windows text mode turns each "\n" into "\r\n",
+    # and the CRLF patch then fails `git apply --check`.
+    patch_path.write_text(result.patch, encoding="utf-8", newline="\n")
     report_path.write_text(
         result.model_dump_json(indent=2),
         encoding="utf-8",
