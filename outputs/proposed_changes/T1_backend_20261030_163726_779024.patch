@@ -1,0 +1,273 @@
+--- /dev/null
++++ b/pilot/app/backend/__init__.py
+@@ -0,0 +1 @@
++"""Backend package for the adaptive exam preparation system."""
+--- /dev/null
++++ b/pilot/app/backend/db.py
+@@ -0,0 +1,27 @@
++"""Database connection and session configuration."""
++
++import os
++from typing import Generator
++from sqlalchemy import create_engine
++from sqlalchemy.orm import declarative_base, sessionmaker, Session
++
++DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "pilot_app.db")
++DEFAULT_DB_URL = f"sqlite:///{DEFAULT_DB_PATH}"
++
++Base = declarative_base()
++
++
++def get_engine(db_url: str | None = None):
++    url = db_url or os.getenv("DATABASE_URL", DEFAULT_DB_URL)
++    if url.startswith("sqlite:///:memory:"):
++        raise ValueError("sqlite:///:memory: is not permitted; use a file-backed database.")
++    return create_engine(url, connect_args={"check_same_thread": False} if url.startswith("sqlite") else {})
++
++
++def init_db(engine) -> None:
++    """Explicitly initialize database tables without side-effects on module import."""
++    Base.metadata.create_all(bind=engine)
++
++
++def get_session_factory(engine):
++    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+--- /dev/null
++++ b/pilot/app/backend/models.py
+@@ -0,0 +1,48 @@
++"""SQLAlchemy models for core T1 domain entities: users, uploads, and exams."""
++
++import uuid
++from datetime import datetime, timezone
++from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
++from pilot.app.backend.db import Base
++
++
++def generate_uuid() -> str:
++    return str(uuid.uuid4())
++
++
++def utc_now() -> datetime:
++    return datetime.now(timezone.utc)
++
++
++class User(Base):
++    __tablename__ = "users"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    email = Column(String(255), unique=True, index=True, nullable=False)
++    password_hash = Column(String(255), nullable=True)
++    created_at = Column(DateTime, default=utc_now, nullable=False)
++
++
++class Document(Base):
++    __tablename__ = "documents"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
++    title = Column(String(255), nullable=False)
++    doc_type = Column(String(50), nullable=False)
++    storage_path = Column(String(512), nullable=False)
++    parsed_text = Column(Text, nullable=True)
++    status = Column(String(30), nullable=False, default="PENDING")
++    created_at = Column(DateTime, default=utc_now, nullable=False)
++
++
++class GeneratedExam(Base):
++    __tablename__ = "generated_exams"
++
++    id = Column(String(36), primary_key=True, default=generate_uuid)
++    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
++    source_blueprint_id = Column(String(36), nullable=True)
++    title = Column(String(255), nullable=False)
++    is_adaptive = Column(Boolean, default=False, nullable=False)
++    status = Column(String(30), nullable=False, default="GENERATING")
++    created_at = Column(DateTime, default=utc_now, nullable=False)
+--- /dev/null
++++ b/pilot/app/backend/schemas.py
+@@ -0,0 +1,88 @@
++"""OpenAPI contract schemas for the API endpoints documented in Section 4.2."""
++
++from datetime import datetime
++from typing import List, Optional
++from pydantic import BaseModel, ConfigDict, Field
++
++
++class DocumentUploadAccepted(BaseModel):
++    document_id: str
++    status: str
++    message: str
++
++
++class DocumentDetailResponse(BaseModel):
++    document_id: str
++    title: str
++    doc_type: str
++    status: str
++    extracted_char_count: Optional[int] = None
++    created_at: datetime
++
++
++class JobAcceptedResponse(BaseModel):
++    job_id: str
++
++
++class JobStatusResponse(BaseModel):
++    job_id: str
++    status: str
++    progress_percentage: int
++    result_id: Optional[str] = None
++    error: Optional[str] = None
++
++
++class ExamGenerateRequest(BaseModel):
++    source_blueprint_id: str
++    study_document_ids: List[str]
++    adaptive_mode: bool = False
++
++
++class QuestionItem(BaseModel):
++    question_id: str
++    sequence_order: int
++    question_type: str
++    prompt: str
++    options: Optional[List[str]] = None
++    points: int
++
++
++class ExamDetailResponse(BaseModel):
++    exam_id: str
++    title: str
++    total_questions: int
++    questions: List[QuestionItem]
++
++
++class SessionStartResponse(BaseModel):
++    session_id: str
++    started_at: datetime
++
++
++class AnswerSubmissionItem(BaseModel):
++    question_id: str
++    student_answer: str
++
++
++class SaveAnswersRequest(BaseModel):
++    answers: List[AnswerSubmissionItem]
++
++
++class SaveAnswersResponse(BaseModel):
++    status: str
++    last_saved_at: datetime
++
++
++class EvaluationItem(BaseModel):
++    question_id: str
++    score: float
++    max_score: float
++    is_correct: bool
++    feedback: str
++
++
++class SessionReportResponse(BaseModel):
++    session_id: str
++    total_score: float
++    earned_score: float
++    evaluations: List[EvaluationItem]
+--- /dev/null
++++ b/pilot/app/backend/app.py
+@@ -0,0 +1,26 @@
++"""FastAPI application exposing OpenAPI contracts."""
++
++from fastapi import FastAPI
++from pilot.app.backend.schemas import (
++    DocumentUploadAccepted,
++    DocumentDetailResponse,
++    JobAcceptedResponse,
++    JobStatusResponse,
++    ExamGenerateRequest,
++    ExamDetailResponse,
++    SessionStartResponse,
++    SaveAnswersRequest,
++    SaveAnswersResponse,
++    SessionReportResponse,
++)
++
++app = FastAPI(
++    title="AI-Powered Adaptive Exam Preparation System API",
++    version="0.1.0",
++    description="OpenAPI contract definitions for AI exam preparation system.",
++)
++
++
++@app.get("/health", tags=["System"])
++def health_check():
++    return {"status": "ok"}
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -5,6 +5,7 @@
+ charset-normalizer==3.5.2
+ cryptography==50.0.2
+ distro==1.9.0
++fastapi
+ google-auth==2.61.0
+ google-genai==2.29.0
+ h11==0.16.0
+@@ -19,6 +20,7 @@
+ python-dotenv==1.2.4
+ requests==2.34.2
+ sniffio==1.3.1
++sqlalchemy
+ tenacity==9.1.4
+ typing-inspection==0.4.4
+ typing_extensions==4.16.0
+--- /dev/null
++++ b/tests/test_backend_db_schema.py
+@@ -0,0 +1,47 @@
++"""Tests for SQLite persistence schema creation and initialization behavior."""
++
++import os
++import pytest
++from sqlalchemy import inspect
++from pilot.app.backend.db import Base, get_engine, init_db, get_session_factory
++from pilot.app.backend.models import User, Document, GeneratedExam
++
++
++def test_init_db_creates_tables_in_temporary_file_sqlite(tmp_path):
++    db_file = tmp_path / "test_pilot.db"
++    db_url = f"sqlite:///{db_file}"
++    
++    engine = get_engine(db_url)
++    inspector_before = inspect(engine)
++    assert not inspector_before.has_table("users")
++    assert not inspector_before.has_table("documents")
++    assert not inspector_before.has_table("generated_exams")
++
++    init_db(engine)
++
++    inspector_after = inspect(engine)
++    tables = inspector_after.get_table_names()
++    assert "users" in tables
++    assert "documents" in tables
++    assert "generated_exams" in tables
++
++    session_factory = get_session_factory(engine)
++    with session_factory() as session:
++        user = User(email="student@example.edu")
++        session.add(user)
++        session.commit()
++
++        doc = Document(user_id=user.id, title="midterm.pdf", doc_type="EXAM_SAMPLE", storage_path="/data/midterm.pdf")
++        exam = GeneratedExam(user_id=user.id, title="Practice Midterm")
++        session.add(doc)
++        session.add(exam)
++        session.commit()
++
++        assert session.query(User).count() == 1
++        assert session.query(Document).count() == 1
++        assert session.query(GeneratedExam).count() == 1
++
++
++def test_rejects_memory_sqlite_database():
++    with pytest.raises(ValueError, match="sqlite:///:memory: is not permitted"):
++        get_engine("sqlite:///:memory:")

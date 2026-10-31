@@ -1,0 +1,225 @@
+--- /dev/null
++++ b/pilot/app/backend/__init__.py
+@@ -0,0 +1 @@
++"""Backend package for the adaptive exam preparation system."""
+--- /dev/null
++++ b/pilot/app/backend/db.py
+@@ -0,0 +1,70 @@
++import os
++import sqlite3
++from pathlib import Path
++from typing import Optional
++
++DEFAULT_DB_PATH = os.getenv("APP_DB_PATH", "exam_system.db")
++
++SCHEMA_SQL = """
++CREATE TABLE IF NOT EXISTS users (
++    id TEXT PRIMARY KEY,
++    email TEXT UNIQUE NOT NULL,
++    password_hash TEXT,
++    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
++);
++
++CREATE TABLE IF NOT EXISTS documents (
++    id TEXT PRIMARY KEY,
++    user_id TEXT NOT NULL,
++    title TEXT NOT NULL,
++    doc_type TEXT NOT NULL,
++    storage_path TEXT NOT NULL,
++    parsed_text TEXT,
++    status TEXT NOT NULL,
++    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++    FOREIGN KEY (user_id) REFERENCES users(id)
++);
++
++CREATE TABLE IF NOT EXISTS exam_blueprints (
++    id TEXT PRIMARY KEY,
++    source_document_id TEXT NOT NULL,
++    blueprint_json TEXT NOT NULL,
++    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++    FOREIGN KEY (source_document_id) REFERENCES documents(id)
++);
++
++CREATE TABLE IF NOT EXISTS generated_exams (
++    id TEXT PRIMARY KEY,
++    user_id TEXT NOT NULL,
++    source_blueprint_id TEXT,
++    title TEXT NOT NULL,
++    is_adaptive INTEGER NOT NULL DEFAULT 0,
++    status TEXT NOT NULL,
++    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++    FOREIGN KEY (user_id) REFERENCES users(id),
++    FOREIGN KEY (source_blueprint_id) REFERENCES exam_blueprints(id)
++);
++"""
++
++
++def get_db_path(db_path: Optional[str] = None) -> str:
++    path = db_path or DEFAULT_DB_PATH
++    if path == ":memory:":
++        raise ValueError("In-memory SQLite database is disallowed. Use a file-backed path.")
++    return path
++
++
++def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
++    resolved_path = get_db_path(db_path)
++    parent = Path(resolved_path).parent
++    if parent and str(parent) != ".":
++        parent.mkdir(parents=True, exist_ok=True)
++    conn = sqlite3.connect(resolved_path)
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys = ON;")
++    return conn
++
++
++def init_db(db_path: Optional[str] = None) -> None:
++    with get_connection(db_path) as conn:
++        conn.executescript(SCHEMA_SQL)
+--- /dev/null
++++ b/pilot/app/backend/openapi.py
+@@ -0,0 +1,73 @@
++"""OpenAPI specification contract definitions for the adaptive exam system."""
++
++OPENAPI_SPEC = {
++    "openapi": "3.0.3",
++    "info": {
++        "title": "Adaptive Exam Preparation System API",
++        "version": "1.0.0",
++        "description": "API specifications defining service contracts for AI integration, document processing, and exam workflows."
++    },
++    "paths": {
++        "/api/v1/documents": {
++            "post": {
++                "summary": "Upload study material or exam paper",
++                "responses": {
++                    "202": {"description": "File accepted for extraction."}
++                }
++            }
++        },
++        "/api/v1/documents/{document_id}": {
++            "get": {
++                "summary": "Get document metadata and status",
++                "parameters": [
++                    {"name": "document_id", "in": "path", "required": True, "schema": {"type": "string"}}
++                ],
++                "responses": {
++                    "200": {"description": "Document details returned."},
++                    "404": {"description": "Document not found."}
++                }
++            }
++        },
++        "/api/v1/documents/{document_id}/decompose": {
++            "post": {
++                "summary": "Trigger exam decomposition into pedagogical blueprint",
++                "parameters": [
++                    {"name": "document_id", "in": "path", "required": True, "schema": {"type": "string"}}
++                ],
++                "responses": {
++                    "202": {"description": "Job created for decomposition."}
++                }
++            }
++        },
++        "/api/v1/jobs/{job_id}": {
++            "get": {
++                "summary": "Check status of long-running job",
++                "parameters": [
++                    {"name": "job_id", "in": "path", "required": True, "schema": {"type": "string"}}
++                ],
++                "responses": {
++                    "200": {"description": "Job status retrieved."}
++                }
++            }
++        },
++        "/api/v1/exams/generate": {
++            "post": {
++                "summary": "Request practice exam generation",
++                "responses": {
++                    "202": {"description": "Job created for exam generation."}
++                }
++            }
++        },
++        "/api/v1/exams/{exam_id}": {
++            "get": {
++                "summary": "Get generated exam content",
++                "parameters": [
++                    {"name": "exam_id", "in": "path", "required": True, "schema": {"type": "string"}}
++                ],
++                "responses": {
++                    "200": {"description": "Exam details returned."}
++                }
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/tests/test_backend_database_schema.py
+@@ -0,0 +1,69 @@
++import sqlite3
++import pytest
++from pilot.app.backend.db import init_db, get_connection, get_db_path
++from pilot.app.backend.openapi import OPENAPI_SPEC
++
++
++def test_init_db_creates_required_tables_in_temporary_file(tmp_path):
++    test_db = tmp_path / "test_exam.db"
++    db_path = str(test_db)
++
++    # Verify tables do not exist before init
++    conn = get_connection(db_path)
++    cursor = conn.cursor()
++    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
++    tables_before = [row["name"] for row in cursor.fetchall()]
++    assert "users" not in tables_before
++    assert "documents" not in tables_before
++    assert "exam_blueprints" not in tables_before
++    assert "generated_exams" not in tables_before
++    conn.close()
++
++    # Initialize schema
++    init_db(db_path)
++
++    # Verify tables exist after init
++    conn = get_connection(db_path)
++    cursor = conn.cursor()
++    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
++    tables_after = [row["name"] for row in cursor.fetchall()]
++
++    assert "users" in tables_after
++    assert "documents" in tables_after
++    assert "exam_blueprints" in tables_after
++    assert "generated_exams" in tables_after
++
++    # Test concrete operations to ensure constraints and structure
++    cursor.execute(
++        "INSERT INTO users (id, email) VALUES (?, ?);",
++        ("usr-1", "student@example.com"),
++    )
++    cursor.execute(
++        "INSERT INTO documents (id, user_id, title, doc_type, storage_path, status) VALUES (?, ?, ?, ?, ?, ?);",
++        ("doc-1", "usr-1", "Midterm.pdf", "EXAM_SAMPLE", "/storage/doc-1", "PARSED"),
++    )
++    cursor.execute(
++        "INSERT INTO exam_blueprints (id, source_document_id, blueprint_json) VALUES (?, ?, ?);",
++        ("bp-1", "doc-1", "{}"),
++    )
++    cursor.execute(
++        "INSERT INTO generated_exams (id, user_id, source_blueprint_id, title, status) VALUES (?, ?, ?, ?, ?);",
++        ("exam-1", "usr-1", "bp-1", "Practice Midterm", "READY"),
++    )
++    conn.commit()
++
++    cursor.execute("SELECT title FROM generated_exams WHERE id = 'exam-1';")
++    row = cursor.fetchone()
++    assert row["title"] == "Practice Midterm"
++    conn.close()
++
++
++def test_disallows_in_memory_sqlite():
++    with pytest.raises(ValueError, match="disallowed"):
++        get_db_path(":memory:")
++
++
++def test_openapi_spec_structure():
++    assert "paths" in OPENAPI_SPEC
++    assert "/api/v1/documents" in OPENAPI_SPEC["paths"]
++    assert "/api/v1/exams/generate" in OPENAPI_SPEC["paths"]

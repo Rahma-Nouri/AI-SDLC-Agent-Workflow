@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "saved_at": "2026-10-28T22:35:20+01:00",
+  "saved_at": "2026-10-30T16:31:40+01:00",
   "source": "approved workflow run",
   "note": "A future resume run must request fresh H1 and H2 approvals. These saved approval values are historical only.",
   "human_approvals": {
