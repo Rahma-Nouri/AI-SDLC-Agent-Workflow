@@ -8,7 +8,13 @@ from agents.agent_contracts import BackendDeveloperResult
 from agents.backend_developer import BackendDeveloperAgent
 from agents.orchestrator import OrchestratorAgent
 from agents.software_architect import SoftwareArchitectAgent
+from agents.testing_workflow import run_task_tests
 from agents.ticket_quality_checker import TicketQualityChecker
+
+
+# The tests that belong to T1. They arrived with the accepted T1 patch
+# (see "tests_added" in its report) and were applied in P1.2.
+T1_TEST_PATHS = ["tests/test_backend_database_schema.py"]
 
 
 def read_text_file(path, default=""):
@@ -424,8 +430,13 @@ def load_approved_context(snapshot_path):
     return snapshot
 
 
-def run_resume_patch(project_root, orchestrator, agent=None):
-    """Load saved context, request fresh approvals, and offer a patch."""
+def request_fresh_approvals(project_root, orchestrator, next_step):
+    """Load the saved approved context and ask for fresh H1 and H2.
+
+    Shared by the resume modes. Returns (snapshot, architecture) when both
+    gates are approved, or None when the run must stop. next_step is only
+    used in messages, for example "patch generation" or "the T1 tests".
+    """
 
     project_root = Path(project_root)
     snapshot_path = (
@@ -461,9 +472,7 @@ def run_resume_patch(project_root, orchestrator, agent=None):
     )
 
     if decision != "approve":
-        print(
-            "\nH1 was not approved. Resume stopped before H2 or patch generation."
-        )
+        print(f"\nH1 was not approved. Stopped before H2 and {next_step}.")
         print("Use the full workflow if you want to revise or regenerate the plan.")
         return None
 
@@ -471,14 +480,14 @@ def run_resume_patch(project_root, orchestrator, agent=None):
 
     if not architecture_path.is_file():
         print(f"\nArchitecture file not found: {architecture_path}")
-        print("Resume stopped before H2 or patch generation.")
+        print(f"Stopped before H2 and {next_step}.")
         return None
 
     try:
         current_architecture = read_text_file(architecture_path)
     except (OSError, UnicodeError) as error:
         print(f"\nCould not read the architecture file: {error}")
-        print("Resume stopped before H2 or patch generation.")
+        print(f"Stopped before H2 and {next_step}.")
         return None
 
     if current_architecture != snapshot["architecture"]:
@@ -493,21 +502,41 @@ def run_resume_patch(project_root, orchestrator, agent=None):
         architecture_path=architecture_path,
         tasks=tasks,
     ):
-        print("\nH2 was not approved. Resume stopped before patch generation.")
+        print(f"\nH2 was not approved. Stopped before {next_step}.")
         return None
 
-    # Save the exact current architecture that passed the fresh H2 review.
+    # Use the exact architecture text that passed the fresh H2 review.
     try:
         architecture = read_text_file(architecture_path)
     except (OSError, UnicodeError) as error:
         print(f"\nCould not reread the H2-approved architecture: {error}")
-        print("Resume stopped before patch generation.")
+        print(f"Stopped before {next_step}.")
         return None
 
     if not architecture.strip():
         print("\nThe H2-approved architecture file is empty.")
-        print("Resume stopped before patch generation.")
+        print(f"Stopped before {next_step}.")
         return None
+
+    return snapshot, architecture
+
+
+def run_resume_patch(project_root, orchestrator, agent=None):
+    """Load saved context, request fresh approvals, and offer a patch."""
+
+    project_root = Path(project_root)
+
+    approved = request_fresh_approvals(
+        project_root,
+        orchestrator,
+        next_step="patch generation",
+    )
+
+    if approved is None:
+        return None
+
+    snapshot, architecture = approved
+    tasks = snapshot["tasks"]
 
     try:
         snapshot_path = save_approved_context(
@@ -576,12 +605,87 @@ def run_resume_patch(project_root, orchestrator, agent=None):
     return patch_path, report_path
 
 
+def run_t1_tests(project_root, orchestrator, test_paths=None):
+    """Request fresh H1/H2, run the T1 tests, and save the evidence.
+
+    The Testing Agent only runs pytest and reports what happened. It does not
+    approve anything: the saved review says "ready_for_review" or
+    "needs_revision", and a human still decides at H3.
+    """
+
+    project_root = Path(project_root)
+    test_paths = test_paths or T1_TEST_PATHS
+
+    approved = request_fresh_approvals(
+        project_root,
+        orchestrator,
+        next_step="the T1 tests",
+    )
+
+    if approved is None:
+        return None
+
+    snapshot, architecture = approved
+
+    task = next(
+        (item for item in snapshot["tasks"] if item.get("task_id") == "T1"),
+        None,
+    )
+
+    if task is None:
+        print("\nApproved task T1 was not found. No tests were run.")
+        return None
+
+    print(f"\nRunning the T1 tests: {', '.join(test_paths)}")
+
+    try:
+        evidence = run_task_tests(
+            orchestrator=orchestrator,
+            task=task,
+            project_root=project_root,
+            test_paths=test_paths,
+            architecture=architecture,
+        )
+    except (RuntimeError, ValueError) as error:
+        print(f"\nThe T1 tests could not be run: {error}")
+        return None
+
+    output_dir = project_root / "outputs" / "test_results"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    result_path = output_dir / f"T1_testing_{timestamp}.json"
+
+    # newline="\n" keeps the saved evidence identical on Windows and Linux.
+    result_path.write_text(
+        json.dumps(evidence, indent=2),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    check = evidence["testing_result"]["checks"][0]
+
+    print(f"Command:   {check['command']}")
+    print(f"Exit code: {check['exit_code']}")
+    print(f"Passed:    {check['passed']}")
+    print(f"Decision:  {evidence['review']['decision']}")
+    print(f"Evidence saved: {result_path}")
+    print("No project source files were changed.")
+
+    return result_path
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--resume-patch",
         action="store_true",
         help="Load saved context and request fresh H1 and H2 approvals.",
+    )
+    parser.add_argument(
+        "--run-t1-tests",
+        action="store_true",
+        help="Request fresh H1 and H2 approvals, then run and save the T1 tests.",
     )
     args = parser.parse_args(argv)
 
@@ -604,6 +708,13 @@ def main(argv=None):
 
     if args.resume_patch:
         run_resume_patch(
+            project_root=project_root,
+            orchestrator=orchestrator,
+        )
+        return
+
+    if args.run_t1_tests:
+        run_t1_tests(
             project_root=project_root,
             orchestrator=orchestrator,
         )
