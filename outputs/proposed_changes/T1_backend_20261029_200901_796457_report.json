@@ -1,0 +1,54 @@
+{
+  "task_id": "T1",
+  "summary": "Implement the backend persistence schema using standard library SQLite for users, documents, and exam blueprints/generated exams, configure database initialization without side effects on import, and provide an OpenAPI specification asset defining service contracts as required by T1.",
+  "patch": "--- /dev/null\n+++ b/pilot/app/backend/__init__.py\n@@ -0,0 +1 @@\n+\"\"\"Backend package for the adaptive exam preparation system.\"\"\"\n--- /dev/null\n+++ b/pilot/app/backend/db.py\n@@ -0,0 +1,70 @@\n+import os\n+import sqlite3\n+from pathlib import Path\n+from typing import Optional\n+\n+DEFAULT_DB_PATH = os.getenv(\"APP_DB_PATH\", \"exam_system.db\")\n+\n+SCHEMA_SQL = \"\"\"\n+CREATE TABLE IF NOT EXISTS users (\n+    id TEXT PRIMARY KEY,\n+    email TEXT UNIQUE NOT NULL,\n+    password_hash TEXT,\n+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n+);\n+\n+CREATE TABLE IF NOT EXISTS documents (\n+    id TEXT PRIMARY KEY,\n+    user_id TEXT NOT NULL,\n+    title TEXT NOT NULL,\n+    doc_type TEXT NOT NULL,\n+    storage_path TEXT NOT NULL,\n+    parsed_text TEXT,\n+    status TEXT NOT NULL,\n+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n+    FOREIGN KEY (user_id) REFERENCES users(id)\n+);\n+\n+CREATE TABLE IF NOT EXISTS exam_blueprints (\n+    id TEXT PRIMARY KEY,\n+    source_document_id TEXT NOT NULL,\n+    blueprint_json TEXT NOT NULL,\n+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n+    FOREIGN KEY (source_document_id) REFERENCES documents(id)\n+);\n+\n+CREATE TABLE IF NOT EXISTS generated_exams (\n+    id TEXT PRIMARY KEY,\n+    user_id TEXT NOT NULL,\n+    source_blueprint_id TEXT,\n+    title TEXT NOT NULL,\n+    is_adaptive INTEGER NOT NULL DEFAULT 0,\n+    status TEXT NOT NULL,\n+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n+    FOREIGN KEY (user_id) REFERENCES users(id),\n+    FOREIGN KEY (source_blueprint_id) REFERENCES exam_blueprints(id)\n+);\n+\"\"\"\n+\n+\n+def get_db_path(db_path: Optional[str] = None) -> str:\n+    path = db_path or DEFAULT_DB_PATH\n+    if path == \":memory:\":\n+        raise ValueError(\"In-memory SQLite database is disallowed. Use a file-backed path.\")\n+    return path\n+\n+\n+def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:\n+    resolved_path = get_db_path(db_path)\n+    parent = Path(resolved_path).parent\n+    if parent and str(parent) != \".\":\n+        parent.mkdir(parents=True, exist_ok=True)\n+    conn = sqlite3.connect(resolved_path)\n+    conn.row_factory = sqlite3.Row\n+    conn.execute(\"PRAGMA foreign_keys = ON;\")\n+    return conn\n+\n+\n+def init_db(db_path: Optional[str] = None) -> None:\n+    with get_connection(db_path) as conn:\n+        conn.executescript(SCHEMA_SQL)\n--- /dev/null\n+++ b/pilot/app/backend/openapi.py\n@@ -0,0 +1,73 @@\n+\"\"\"OpenAPI specification contract definitions for the adaptive exam system.\"\"\"\n+\n+OPENAPI_SPEC = {\n+    \"openapi\": \"3.0.3\",\n+    \"info\": {\n+        \"title\": \"Adaptive Exam Preparation System API\",\n+        \"version\": \"1.0.0\",\n+        \"description\": \"API specifications defining service contracts for AI integration, document processing, and exam workflows.\"\n+    },\n+    \"paths\": {\n+        \"/api/v1/documents\": {\n+            \"post\": {\n+                \"summary\": \"Upload study material or exam paper\",\n+                \"responses\": {\n+                    \"202\": {\"description\": \"File accepted for extraction.\"}\n+                }\n+            }\n+        },\n+        \"/api/v1/documents/{document_id}\": {\n+            \"get\": {\n+                \"summary\": \"Get document metadata and status\",\n+                \"parameters\": [\n+                    {\"name\": \"document_id\", \"in\": \"path\", \"required\": True, \"schema\": {\"type\": \"string\"}}\n+                ],\n+                \"responses\": {\n+                    \"200\": {\"description\": \"Document details returned.\"},\n+                    \"404\": {\"description\": \"Document not found.\"}\n+                }\n+            }\n+        },\n+        \"/api/v1/documents/{document_id}/decompose\": {\n+            \"post\": {\n+                \"summary\": \"Trigger exam decomposition into pedagogical blueprint\",\n+                \"parameters\": [\n+                    {\"name\": \"document_id\", \"in\": \"path\", \"required\": True, \"schema\": {\"type\": \"string\"}}\n+                ],\n+                \"responses\": {\n+                    \"202\": {\"description\": \"Job created for decomposition.\"}\n+                }\n+            }\n+        },\n+        \"/api/v1/jobs/{job_id}\": {\n+            \"get\": {\n+                \"summary\": \"Check status of long-running job\",\n+                \"parameters\": [\n+                    {\"name\": \"job_id\", \"in\": \"path\", \"required\": True, \"schema\": {\"type\": \"string\"}}\n+                ],\n+                \"responses\": {\n+                    \"200\": {\"description\": \"Job status retrieved.\"}\n+                }\n+            }\n+        },\n+        \"/api/v1/exams/generate\": {\n+            \"post\": {\n+                \"summary\": \"Request practice exam generation\",\n+                \"responses\": {\n+                    \"202\": {\"description\": \"Job created for exam generation.\"}\n+                }\n+            }\n+        },\n+        \"/api/v1/exams/{exam_id}\": {\n+            \"get\": {\n+                \"summary\": \"Get generated exam content\",\n+                \"parameters\": [\n+                    {\"name\": \"exam_id\", \"in\": \"path\", \"required\": True, \"schema\": {\"type\": \"string\"}}\n+                ],\n+                \"responses\": {\n+                    \"200\": {\"description\": \"Exam details returned.\"}\n+                }\n+            }\n+        }\n+    }\n+}\n--- /dev/null\n+++ b/tests/test_backend_database_schema.py\n@@ -0,0 +1,69 @@\n+import sqlite3\n+import pytest\n+from pilot.app.backend.db import init_db, get_connection, get_db_path\n+from pilot.app.backend.openapi import OPENAPI_SPEC\n+\n+\n+def test_init_db_creates_required_tables_in_temporary_file(tmp_path):\n+    test_db = tmp_path / \"test_exam.db\"\n+    db_path = str(test_db)\n+\n+    # Verify tables do not exist before init\n+    conn = get_connection(db_path)\n+    cursor = conn.cursor()\n+    cursor.execute(\"SELECT name FROM sqlite_master WHERE type='table';\")\n+    tables_before = [row[\"name\"] for row in cursor.fetchall()]\n+    assert \"users\" not in tables_before\n+    assert \"documents\" not in tables_before\n+    assert \"exam_blueprints\" not in tables_before\n+    assert \"generated_exams\" not in tables_before\n+    conn.close()\n+\n+    # Initialize schema\n+    init_db(db_path)\n+\n+    # Verify tables exist after init\n+    conn = get_connection(db_path)\n+    cursor = conn.cursor()\n+    cursor.execute(\"SELECT name FROM sqlite_master WHERE type='table';\")\n+    tables_after = [row[\"name\"] for row in cursor.fetchall()]\n+\n+    assert \"users\" in tables_after\n+    assert \"documents\" in tables_after\n+    assert \"exam_blueprints\" in tables_after\n+    assert \"generated_exams\" in tables_after\n+\n+    # Test concrete operations to ensure constraints and structure\n+    cursor.execute(\n+        \"INSERT INTO users (id, email) VALUES (?, ?);\",\n+        (\"usr-1\", \"student@example.com\"),\n+    )\n+    cursor.execute(\n+        \"INSERT INTO documents (id, user_id, title, doc_type, storage_path, status) VALUES (?, ?, ?, ?, ?, ?);\",\n+        (\"doc-1\", \"usr-1\", \"Midterm.pdf\", \"EXAM_SAMPLE\", \"/storage/doc-1\", \"PARSED\"),\n+    )\n+    cursor.execute(\n+        \"INSERT INTO exam_blueprints (id, source_document_id, blueprint_json) VALUES (?, ?, ?);\",\n+        (\"bp-1\", \"doc-1\", \"{}\"),\n+    )\n+    cursor.execute(\n+        \"INSERT INTO generated_exams (id, user_id, source_blueprint_id, title, status) VALUES (?, ?, ?, ?, ?);\",\n+        (\"exam-1\", \"usr-1\", \"bp-1\", \"Practice Midterm\", \"READY\"),\n+    )\n+    conn.commit()\n+\n+    cursor.execute(\"SELECT title FROM generated_exams WHERE id = 'exam-1';\")\n+    row = cursor.fetchone()\n+    assert row[\"title\"] == \"Practice Midterm\"\n+    conn.close()\n+\n+\n+def test_disallows_in_memory_sqlite():\n+    with pytest.raises(ValueError, match=\"disallowed\"):\n+        get_db_path(\":memory:\")\n+\n+\n+def test_openapi_spec_structure():\n+    assert \"paths\" in OPENAPI_SPEC\n+    assert \"/api/v1/documents\" in OPENAPI_SPEC[\"paths\"]\n+    assert \"/api/v1/exams/generate\" in OPENAPI_SPEC[\"paths\"]\n",
+  "changed_files": [
+    {
+      "path": "pilot/app/backend/__init__.py",
+      "purpose": "Package initializer for backend module."
+    },
+    {
+      "path": "pilot/app/backend/db.py",
+      "purpose": "Configurable SQLite database connection and schema initialization without import side-effects."
+    },
+    {
+      "path": "pilot/app/backend/openapi.py",
+      "purpose": "Specification asset defining OpenAPI contracts for document processing, decomposition, and exam workflows."
+    },
+    {
+      "path": "tests/test_backend_database_schema.py",
+      "purpose": "Tests configurable database initialization and schema creation using a temporary file-backed SQLite database."
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "criterion": "Architecture Decision Records (ADRs) are documented and approved.",
+      "status": "not_addressed",
+      "evidence": "ADRs are architecture/design documentation artifacts outside this backend code slice."
+    },
+    {
+      "criterion": "Component interaction diagrams and data flow diagrams are completed.",
+      "status": "not_addressed",
+      "evidence": "Diagram design and documentation deliverables are outside this backend code slice."
+    },
+    {
+      "criterion": "OpenAPI specifications defining all service contracts are drafted.",
+      "status": "addressed",
+      "evidence": "Added pilot/app/backend/openapi.py containing OpenAPI 3.0.3 contracts for ingestion, decomposition, jobs, and exam generation."
+    },
+    {
+      "criterion": "Initial database schema for users, uploads, and exams is created.",
+      "status": "addressed",
+      "evidence": "Added pilot/app/backend/db.py defining configurable file-backed SQLite schema for users, documents, exam_blueprints, and generated_exams with accompanying tests in tests/test_backend_database_schema.py."
+    }
+  ],
+  "tests_added": [
+    "tests/test_backend_database_schema.py"
+  ],
+  "assumptions": [
+    "Standard library sqlite3 is used without external ORM dependencies to avoid unverified package compatibility on Python 3.14.8."
+  ],
+  "unresolved_issues": [
+    "ADRs and visual architectural diagrams belong to general architectural documentation and are not covered by backend code patches."
+  ]
+}
