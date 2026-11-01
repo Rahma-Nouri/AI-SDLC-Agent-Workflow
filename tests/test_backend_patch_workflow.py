@@ -93,6 +93,24 @@ def test_patch_flow_delegates_t1_and_saves_artifacts(tmp_path):
     assert report["patch"].startswith("--- /dev/null")
 
 
+def test_saved_patch_uses_lf_line_endings(tmp_path):
+    patch_path, _ = create_t1_backend_patch(
+        orchestrator=FakeOrchestrator(),
+        tasks=[{"task_id": "T1"}],
+        architecture="Approved architecture",
+        project_context={},
+        output_dir=tmp_path,
+        agent=FakeBackendAgent(),
+    )
+
+    # Read raw bytes, not text: read_text() would silently turn "\r\n" back
+    # into "\n" and hide the problem this test is meant to catch.
+    raw_bytes = patch_path.read_bytes()
+
+    assert b"\r" not in raw_bytes
+    assert raw_bytes == make_result().patch.encode("utf-8")
+
+
 @pytest.mark.parametrize(
     ("h1", "h2", "message"),
     [
