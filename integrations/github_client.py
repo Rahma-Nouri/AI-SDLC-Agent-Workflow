@@ -1,5 +1,6 @@
 
 import os
+import re
 
 import requests
 from dotenv import load_dotenv
@@ -133,7 +134,9 @@ class GitHubClient:
             if "pull_request" in issue:
                 continue
 
-            if f"Task ID: {task_id}" in issue.get("body", ""):
+            # Match the exact "**Task ID:** T1" line, so "T1" never matches "T10".
+            body_lines = (issue.get("body") or "").splitlines()
+            if f"**Task ID:** {task_id}" in (line.strip() for line in body_lines):
                 print(
                     f"Skipping {task_id}: "
                     f"already exists as issue #{issue['number']}."
@@ -205,7 +208,7 @@ class GitHubClient:
                     break
 
             # Skip non-task issues, such as the integration test issue.
-            if not task_id.startswith("TASK-"):
+            if not re.fullmatch(r"TASK-\d+|T\d+", task_id):
                 continue
 
             # Extract the description.
@@ -265,3 +268,49 @@ class GitHubClient:
 
         return tasks
 
+
+    def list_all_issues(self):
+        """Read every issue (open and closed), page by page. Changes nothing."""
+        issues = []
+        page = 1
+
+        while True:
+            response = requests.get(
+                f"{self.base_url}/issues",
+                headers=self.headers,
+                params={"state": "all", "per_page": 100, "page": page},
+                timeout=30,
+            )
+            response.raise_for_status()
+            batch = response.json()
+            if not batch:
+                break
+
+            # The issues endpoint also returns pull requests; skip them.
+            issues.extend(item for item in batch if "pull_request" not in item)
+
+            if len(batch) < 100:
+                break
+            page += 1
+
+        return issues
+
+    def close_issue(self, number, comment, state_reason="not_planned"):
+        """Add a comment, then close the issue with the given reason."""
+        comment_response = requests.post(
+            f"{self.base_url}/issues/{number}/comments",
+            headers=self.headers,
+            json={"body": comment},
+            timeout=15,
+        )
+        comment_response.raise_for_status()
+
+        response = requests.patch(
+            f"{self.base_url}/issues/{number}",
+            headers=self.headers,
+            json={"state": "closed", "state_reason": state_reason},
+            timeout=15,
+        )
+        response.raise_for_status()
+        print(f"Closed issue #{number} ({state_reason}).")
+        return response.json()

@@ -7,10 +7,12 @@ from pathlib import Path
 
 from agents.agent_contracts import BackendDeveloperResult
 from agents.backend_developer import BackendDeveloperAgent
+from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
 from agents.software_architect import SoftwareArchitectAgent
 from agents.testing_workflow import run_task_tests
 from agents.ticket_quality_checker import TicketQualityChecker
+from integrations.github_client import GitHubClient
 
 
 # The tests that belong to T1. They arrived with the accepted T1 patch
@@ -463,8 +465,11 @@ def load_approved_context(snapshot_path):
     return snapshot
 
 
-def request_fresh_approvals(project_root, orchestrator, next_step):
+def request_fresh_approvals(project_root, orchestrator, next_step, require_h2=True):
     """Load the saved approved context and ask for fresh H1 and H2.
+
+    With require_h2=False only H1 is asked (for steps that need the approved
+    backlog but not the architecture); then it returns (snapshot, None).
 
     Shared by the resume modes. Returns (snapshot, architecture) when both
     gates are approved, or None when the run must stop. next_step is only
@@ -508,6 +513,9 @@ def request_fresh_approvals(project_root, orchestrator, next_step):
         print(f"\nH1 was not approved. Stopped before H2 and {next_step}.")
         print("Use the full workflow if you want to revise or regenerate the plan.")
         return None
+
+    if not require_h2:
+        return snapshot, None
 
     architecture_path = project_root / "pilot" / "architecture_design.md"
 
@@ -708,6 +716,60 @@ def run_t1_tests(project_root, orchestrator, test_paths=None):
     return result_path
 
 
+def run_sync_pilot_issues(project_root, orchestrator, github_client=None):
+    """After a fresh H1, let the Issue Sync Agent align the pilot's GitHub Issues.
+
+    The agent shows its plan first. Nothing changes on GitHub unless the human
+    types 'yes'. World 1 issues (label "world: workflow") are never touched.
+    """
+
+    approved = request_fresh_approvals(
+        project_root,
+        orchestrator,
+        next_step="the issue sync",
+        require_h2=False,
+    )
+
+    if approved is None:
+        return None
+
+    snapshot, _ = approved
+    tasks = snapshot["tasks"]
+
+    try:
+        github = github_client or GitHubClient()
+        issues = github.list_all_issues()
+    except Exception as error:
+        print(f"\nCould not read GitHub Issues: {error}")
+        print("No GitHub changes were made.")
+        return None
+
+    plan = plan_sync(tasks, issues)
+
+    print("\nISSUE SYNC PLAN (nothing has changed yet)")
+    print(describe_plan(plan))
+
+    if not plan["create"] and not plan["close"]:
+        print("\nGitHub Issues already match the approved backlog. Nothing to do.")
+        return {"created": [], "closed": []}
+
+    confirmation = input(
+        "\nApply this plan on GitHub? Enter 'yes' to continue: "
+    ).strip().lower()
+
+    if confirmation != "yes":
+        print("\nIssue sync cancelled. No GitHub changes were made.")
+        return None
+
+    result = IssueSyncAgent(github).execute(plan, tasks)
+
+    print(
+        f"\nIssue sync finished: created {len(result['created'])}, "
+        f"closed {len(result['closed'])}."
+    )
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -719,6 +781,11 @@ def main(argv=None):
         "--run-t1-tests",
         action="store_true",
         help="Request fresh H1 and H2 approvals, then run and save the T1 tests.",
+    )
+    parser.add_argument(
+        "--sync-pilot-issues",
+        action="store_true",
+        help="Request a fresh H1, then align the pilot's GitHub Issues with the approved backlog.",
     )
     args = parser.parse_args(argv)
 
@@ -753,6 +820,13 @@ def main(argv=None):
 
     if args.run_t1_tests:
         run_t1_tests(
+            project_root=project_root,
+            orchestrator=orchestrator,
+        )
+        return
+
+    if args.sync_pilot_issues:
+        run_sync_pilot_issues(
             project_root=project_root,
             orchestrator=orchestrator,
         )
