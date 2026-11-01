@@ -95,6 +95,8 @@ def test_main_stops_before_patch_generation_when_h2_is_not_approved(
         "__file__",
         str(tmp_path / "main.py"),
     )
+    # The pilot files of this test live in tmp_path, so use it as the pilot workspace.
+    monkeypatch.setattr(workflow_main, "get_pilot_root", lambda _root: tmp_path)
 
     class FakeOrchestrator:
         def __init__(self):
@@ -183,6 +185,8 @@ def test_invalid_generated_architecture_preserves_existing_file(
         "__file__",
         str(tmp_path / "main.py"),
     )
+    # The pilot files of this test live in tmp_path, so use it as the pilot workspace.
+    monkeypatch.setattr(workflow_main, "get_pilot_root", lambda _root: tmp_path)
 
     class FakeOrchestrator:
         def __init__(self):

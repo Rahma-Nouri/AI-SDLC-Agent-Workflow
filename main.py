@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,38 @@ from agents.ticket_quality_checker import TicketQualityChecker
 # The tests that belong to T1. They arrived with the accepted T1 patch
 # (see "tests_added" in its report) and were applied in P1.2.
 T1_TEST_PATHS = ["tests/test_backend_database_schema.py"]
+
+# World 2 (the pilot) lives in its own folder: a Git worktree of the
+# pilot/main branch, next to this project folder. The workflow code (World 1)
+# reads and writes the pilot only there, never inside this project folder.
+DEFAULT_PILOT_WORKSPACE_NAME = "AI-SDLC-pilot-workspace"
+
+
+def get_pilot_root(workflow_root):
+    """Return the pilot workspace folder.
+
+    Uses the PILOT_WORKSPACE environment variable when it is set; otherwise the
+    folder named DEFAULT_PILOT_WORKSPACE_NAME next to the workflow folder.
+    """
+
+    configured = os.getenv("PILOT_WORKSPACE")
+
+    if configured:
+        pilot_root = Path(configured)
+    else:
+        pilot_root = Path(workflow_root).resolve().parent / DEFAULT_PILOT_WORKSPACE_NAME
+
+    if not pilot_root.is_dir():
+        raise FileNotFoundError(
+            f"Pilot workspace not found: {pilot_root}\n"
+            "Create it with: git worktree add <folder> pilot/main"
+        )
+
+    # Never let the pilot point back into the workflow project itself.
+    if pilot_root.resolve() == Path(workflow_root).resolve():
+        raise ValueError("The pilot workspace must not be the workflow folder.")
+
+    return pilot_root.resolve()
 
 
 def read_text_file(path, default=""):
@@ -689,7 +722,12 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    project_root = Path(__file__).resolve().parent
+    workflow_root = Path(__file__).resolve().parent
+
+    # From here on, project_root means the PILOT workspace (World 2):
+    # specification, architecture, snapshot, patches and pilot code live there.
+    project_root = get_pilot_root(workflow_root)
+    print(f"Pilot workspace: {project_root}")
 
     specification_path = (
         project_root / "pilot" / "pilot_specification.md"
