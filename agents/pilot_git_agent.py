@@ -22,6 +22,11 @@ AGENT_EMAIL = "backend-agent@ai-sdlc.local"
 BASE_BRANCH = "pilot/main"
 BRANCH_PREFIX = "agent/"
 
+# Everything under outputs/ is a run record (proposals, reports, snapshot).
+# Records never block a run, and the agent commits them on its branch, so
+# evidence of earlier failed attempts is kept, not lost.
+RECORDS_PREFIX = "outputs/"
+
 
 class AgentCommitResult(ContractModel):
     """What the Pilot Git Agent did, for the next workflow steps and the report."""
@@ -53,9 +58,15 @@ class PilotGitAgent:
     def _git(self, *args, check=True):
         """Run one git command inside the pilot workspace (no shell)."""
         completed = subprocess.run(
-            ["git", "-C", str(self.pilot_root), *args],
+            # core.quotepath=off: print file names as they are (no octal escapes).
+            ["git", "-c", "core.quotepath=off", "-C", str(self.pilot_root), *args],
             capture_output=True,
             text=True,
+            # Git writes paths as UTF-8. Without this, Windows Python reads them
+            # with its default code page, so a folder like "Budapesti Műszaki
+            # és ..." becomes garbled text and no longer matches the real path.
+            encoding="utf-8",
+            errors="replace",
             timeout=self.timeout_seconds,
             shell=False,
             check=False,
@@ -84,8 +95,10 @@ class PilotGitAgent:
         if self.workflow_root and self.pilot_root == self.workflow_root:
             raise PilotGitError("Refusing to work in the workflow (World 1) folder.")
 
-        top = Path(self._git("rev-parse", "--show-toplevel").stdout.strip()).resolve()
-        if top != self.pilot_root:
+        top = Path(self._git("rev-parse", "--show-toplevel").stdout.strip())
+        # samefile() compares the real folders, so slash style or letter case
+        # in the path text (C:/ vs C:\\) cannot cause a false mismatch.
+        if not top.is_dir() or not top.samefile(self.pilot_root):
             raise PilotGitError(f"The pilot workspace is not a Git worktree root: {self.pilot_root}")
 
         branch = self._git("branch", "--show-current").stdout.strip()
@@ -95,7 +108,10 @@ class PilotGitAgent:
                 "An earlier agent branch may still wait for an H3 decision."
             )
 
-        unexpected = [path for path in self._changed_paths() if path not in set(allowed_paths)]
+        unexpected = [
+            path for path in self._changed_paths()
+            if path not in set(allowed_paths) and not path.startswith(RECORDS_PREFIX)
+        ]
         if unexpected:
             raise PilotGitError(
                 "The pilot workspace has unexpected changes: " + ", ".join(unexpected)
@@ -137,7 +153,10 @@ class PilotGitAgent:
             state["applied"] = True
 
             # The patch must change exactly the declared files, nothing else.
-            touched = [path for path in self._changed_paths() if path not in set(records)]
+            touched = [
+                path for path in self._changed_paths()
+                if path not in set(records) and not path.startswith(RECORDS_PREFIX)
+            ]
             if touched != declared:
                 raise PilotGitError(
                     f"The patch changed {touched}, but the agent declared {declared}."
@@ -154,7 +173,11 @@ class PilotGitAgent:
             state["committed"] = True
 
             records_commit = None
-            records_to_commit = [path for path in records if path in self._changed_paths()]
+            # This run's records plus any left over from earlier failed attempts.
+            records_to_commit = [
+                path for path in self._changed_paths()
+                if path in set(records) or path.startswith(RECORDS_PREFIX)
+            ]
             if records_to_commit:
                 self._git("add", "--", *records_to_commit)
                 self._git(*identity, "commit", "-m", f"[{task_id}] Record the patch proposal and report")
@@ -201,7 +224,10 @@ class PilotGitAgent:
             raise FrozenFilesError("The fix tried to change frozen test files: " + ", ".join(frozen))
 
         branch = self.current_agent_branch()
-        unexpected = [path for path in self._changed_paths() if path not in set(records)]
+        unexpected = [
+            path for path in self._changed_paths()
+            if path not in set(records) and not path.startswith(RECORDS_PREFIX)
+        ]
         if unexpected:
             raise PilotGitError("The pilot workspace has unexpected changes: " + ", ".join(unexpected))
 
@@ -213,7 +239,10 @@ class PilotGitAgent:
             state["applied"] = True
 
             # A test file the agent did not declare also counts as "not declared".
-            touched = [path for path in self._changed_paths() if path not in set(records)]
+            touched = [
+                path for path in self._changed_paths()
+                if path not in set(records) and not path.startswith(RECORDS_PREFIX)
+            ]
             if touched != declared:
                 raise PilotGitError(f"The fix changed {touched}, but the agent declared {declared}.")
 

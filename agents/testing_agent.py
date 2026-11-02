@@ -62,7 +62,9 @@ class TestingAgent:
             "-p",
             "no:cacheprovider",
         ]
-        environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        # PYTHONIOENCODING makes the test process write UTF-8, and we read it as
+        # UTF-8, so non-English letters in paths or messages stay readable.
+        environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"}
         display_command = subprocess.list2cmdline(command_args)
 
         try:
@@ -71,6 +73,8 @@ class TestingAgent:
                 cwd=self.project_root,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.timeout_seconds,
                 check=False,
                 shell=False,

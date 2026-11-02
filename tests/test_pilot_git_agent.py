@@ -178,3 +178,51 @@ def test_main_hands_the_agent_report_to_the_git_step(tmp_path):
 
     assert result.branch == "agent/T1-attempt-1"
     assert git(repo, "log", "-1", "--format=%s", result.code_commit) == "[T1] Add the file-backed SQLite module"
+
+
+def test_works_in_a_folder_with_hungarian_letters(tmp_path):
+    # The real project lives under "Budapesti Műszaki és Gazdaságtudományi
+    # Egyetem". On Windows this used to fail with "not a Git worktree root",
+    # because git's UTF-8 path was read with the default Windows code page.
+    folder = tmp_path / "Budapesti Műszaki és Gazdaságtudományi Egyetem"
+    folder.mkdir()
+    repo, snapshot = make_pilot_repo(folder)
+    patch_path, records = write_run_records(repo, snapshot, NEW_FILE_PATCH)
+
+    result = PilotGitAgent(repo).apply_patch_on_new_branch(
+        "T1", patch_path, ["pilot/app/backend/db.py"], "Add the database module", records
+    )
+
+    assert result.branch == "agent/T1-attempt-1"
+
+
+def test_records_left_by_a_failed_run_do_not_block_the_next_run(tmp_path):
+    repo, snapshot = make_pilot_repo(tmp_path)
+    # A failed earlier run left its proposal behind (untracked) ...
+    old_proposal = repo / "outputs" / "proposed_changes" / "T1_backend_failed_run.patch"
+    old_proposal.parent.mkdir(parents=True)
+    old_proposal.write_text("old proposal\n", encoding="utf-8", newline="\n")
+    # ... and the next run writes its own records.
+    patch_path, records = write_run_records(repo, snapshot, NEW_FILE_PATCH)
+
+    result = PilotGitAgent(repo).apply_patch_on_new_branch(
+        "T1", patch_path, ["pilot/app/backend/db.py"], "Add the database module", records
+    )
+
+    # The old proposal is kept as evidence in the records commit, and the
+    # code commit contains only the declared code file.
+    assert "T1_backend_failed_run.patch" in git(repo, "show", "--name-only", "--format=", result.records_commit)
+    assert git(repo, "show", "--name-only", "--format=", result.code_commit) == "pilot/app/backend/db.py"
+    assert git(repo, "status", "--porcelain") == ""
+
+
+def test_hand_made_code_changes_still_block_a_run(tmp_path):
+    repo, snapshot = make_pilot_repo(tmp_path)
+    patch_path, records = write_run_records(repo, snapshot, NEW_FILE_PATCH)
+    (repo / "pilot").mkdir(exist_ok=True)
+    (repo / "pilot" / "hand_edit.py").write_text("x = 1\n", encoding="utf-8")
+
+    with pytest.raises(PilotGitError, match="unexpected changes"):
+        PilotGitAgent(repo).apply_patch_on_new_branch(
+            "T1", patch_path, ["pilot/app/backend/db.py"], "x", records
+        )

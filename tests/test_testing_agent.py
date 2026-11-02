@@ -47,6 +47,8 @@ def test_runner_records_a_successful_pytest_execution(tmp_path, monkeypatch):
         "no:cacheprovider",
     ]
     assert captured["kwargs"]["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert captured["kwargs"]["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert captured["kwargs"]["encoding"] == "utf-8"
     assert captured["kwargs"]["shell"] is False
     assert captured["kwargs"]["cwd"] == tmp_path.resolve()
 
