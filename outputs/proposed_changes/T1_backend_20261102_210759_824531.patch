@@ -1,0 +1,524 @@
+--- /dev/null
++++ b/requirements.txt
+@@ -0,0 +1,4 @@
++fastapi>=0.110.0
++uvicorn>=0.28.0
++pydantic>=2.6.0
++pytest>=8.0.0
+--- /dev/null
++++ b/pilot/app/backend/__init__.py
+@@ -0,0 +1 @@
++"""Backend package for AI-Powered Adaptive Exam Preparation System."""
+--- /dev/null
++++ b/pilot/app/backend/db.py
+@@ -0,0 +1,121 @@
++"""Configurable SQLite database initialization and schema migration management."""
++import os
++import sqlite3
++from typing import Optional
++
++DEFAULT_DB_FILE = os.path.abspath(
++    os.getenv("APP_DB_PATH", os.path.join(os.path.dirname(__file__), "app_data.db"))
++)
++
++SCHEMA_SQL = """
++CREATE TABLE IF NOT EXISTS users (
++    id TEXT PRIMARY KEY,
++    email TEXT NOT NULL UNIQUE,
++    password_hash TEXT,
++    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
++);
++
++CREATE TABLE IF NOT EXISTS documents (
++    id TEXT PRIMARY KEY,
++    user_id TEXT NOT NULL,
++    title TEXT NOT NULL,
++    doc_type TEXT NOT NULL,
++    storage_path TEXT NOT NULL,
++    parsed_text TEXT,
++    status TEXT NOT NULL,
++    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++    FOREIGN KEY(user_id) REFERENCES users(id)
++);
++
++CREATE TABLE IF NOT EXISTS exam_blueprints (
++    id TEXT PRIMARY KEY,
++    source_document_id TEXT NOT NULL,
++    blueprint_json TEXT NOT NULL,
++    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++    FOREIGN KEY(source_document_id) REFERENCES documents(id)
++);
++
++CREATE TABLE IF NOT EXISTS generated_exams (
++    id TEXT PRIMARY KEY,
++    user_id TEXT NOT NULL,
++    source_blueprint_id TEXT,
++    title TEXT NOT NULL,
++    is_adaptive INTEGER NOT NULL DEFAULT 0,
++    status TEXT NOT NULL,
++    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++    FOREIGN KEY(user_id) REFERENCES users(id),
++    FOREIGN KEY(source_blueprint_id) REFERENCES exam_blueprints(id)
++);
++
++CREATE TABLE IF NOT EXISTS questions (
++    id TEXT PRIMARY KEY,
++    exam_id TEXT NOT NULL,
++    topic_id TEXT NOT NULL,
++    question_type TEXT NOT NULL,
++    difficulty TEXT NOT NULL,
++    prompt TEXT NOT NULL,
++    options_json TEXT,
++    expected_answer TEXT NOT NULL,
++    grading_rubric TEXT,
++    points INTEGER NOT NULL DEFAULT 1,
++    similarity_score REAL DEFAULT 0.0,
++    FOREIGN KEY(exam_id) REFERENCES generated_exams(id)
++);
++
++CREATE INDEX IF NOT EXISTS idx_questions_topic_id ON questions(topic_id);
++
++CREATE TABLE IF NOT EXISTS exam_sessions (
++    id TEXT PRIMARY KEY,
++    exam_id TEXT NOT NULL,
++    user_id TEXT NOT NULL,
++    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++    submitted_at TIMESTAMP,
++    total_score REAL,
++    max_possible_score REAL,
++    FOREIGN KEY(exam_id) REFERENCES generated_exams(id),
++    FOREIGN KEY(user_id) REFERENCES users(id)
++);
++
++CREATE TABLE IF NOT EXISTS exam_answers (
++    id TEXT PRIMARY KEY,
++    session_id TEXT NOT NULL,
++    question_id TEXT NOT NULL,
++    student_response TEXT,
++    score_awarded REAL,
++    feedback_text TEXT,
++    graded_at TIMESTAMP,
++    FOREIGN KEY(session_id) REFERENCES exam_sessions(id),
++    FOREIGN KEY(question_id) REFERENCES questions(id)
++);
++
++CREATE TABLE IF NOT EXISTS longitudinal_mastery (
++    id TEXT PRIMARY KEY,
++    user_id TEXT NOT NULL,
++    topic TEXT NOT NULL,
++    total_attempts INTEGER NOT NULL DEFAULT 0,
++    successful_attempts INTEGER NOT NULL DEFAULT 0,
++    mastery_rating REAL NOT NULL DEFAULT 0.0,
++    last_assessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++    FOREIGN KEY(user_id) REFERENCES users(id),
++    UNIQUE(user_id, topic)
++);
++
++CREATE INDEX IF NOT EXISTS idx_longitudinal_mastery_topic ON longitudinal_mastery(topic);
++"""
++
++
++def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
++    """Return a SQLite connection for the specified file-backed database path."""
++    target_path = db_path or os.getenv("APP_DB_PATH") or DEFAULT_DB_FILE
++    if target_path == ":memory:":
++        raise ValueError("In-memory sqlite databases are disallowed for persistent application storage.")
++    os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
++    conn = sqlite3.connect(target_path)
++    conn.execute("PRAGMA foreign_keys = ON;")
++    return conn
++
++
++def init_db(db_path: Optional[str] = None) -> None:
++    """Explicitly initialize schema on the chosen database path."""
++    with get_connection(db_path) as conn:
++        conn.executescript(SCHEMA_SQL)
+--- /dev/null
++++ b/pilot/app/backend/models.py
+@@ -0,0 +1,117 @@
++"""Pydantic models for API request/response contracts and data definitions."""
++from datetime import datetime
++from typing import List, Optional
++from pydantic import BaseModel, ConfigDict, Field
++
++
++class DocumentResponse(BaseModel):
++    model_config = ConfigDict(from_attributes=True)
++    document_id: str
++    title: str
++    doc_type: str
++    status: str
++    extracted_char_count: Optional[int] = None
++    created_at: Optional[datetime] = None
++
++
++class DocumentUploadAccepted(BaseModel):
++    document_id: str
++    status: str
++    message: str
++
++
++class JobAcceptedResponse(BaseModel):
++    job_id: str
++
++
++class JobStatusResponse(BaseModel):
++    job_id: str
++    status: str
++    progress_percentage: int
++    result_id: Optional[str] = None
++    error: Optional[str] = None
++
++
++class ExamGenerateRequest(BaseModel):
++    source_blueprint_id: str
++    study_document_ids: List[str] = Field(default_factory=list)
++    adaptive_mode: bool = False
++
++
++class QuestionItem(BaseModel):
++    question_id: str
++    sequence_order: int
++    question_type: str
++    prompt: str
++    options: Optional[List[str]] = None
++    points: int
++
++
++class ExamDetailResponse(BaseModel):
++    exam_id: str
++    title: str
++    total_questions: int
++    questions: List[QuestionItem]
++
++
++class SessionStartResponse(BaseModel):
++    session_id: str
++    started_at: datetime
++
++
++class StudentAnswerItem(BaseModel):
++    question_id: str
++    student_answer: str
++
++
++class SaveAnswersRequest(BaseModel):
++    answers: List[StudentAnswerItem]
++
++
++class SaveAnswersResponse(BaseModel):
++    status: str
++    last_saved_at: datetime
++
++
++class QuestionEvaluation(BaseModel):
++    question_id: str
++    score: float
++    max_score: float
++    is_correct: bool
++    feedback: str
++
++
++class SessionReportResponse(BaseModel):
++    session_id: str
++    total_score: float
++    earned_score: float
++    evaluations: List[QuestionEvaluation]
++
++
++class StudySummarizeRequest(BaseModel):
++    document_id: str
++    focus_topics: List[str] = Field(default_factory=list)
++
++
++class StudySummarizeResponse(BaseModel):
++    summary: str
++    key_points: List[str]
++    formulas: List[str]
++
++
++class TopicMasteryItem(BaseModel):
++    topic: str
++    mastery_score: float
++    status: str
++
++
++class TopicRecommendation(BaseModel):
++    topic: str
++    suggested_action: str
++    reference_document_id: str
++
++
++class ReadinessDashboardResponse(BaseModel):
++    overall_readiness_percentage: float
++    topic_mastery: List[TopicMasteryItem]
++    recommendations: List[TopicRecommendation]
+--- /dev/null
++++ b/pilot/app/backend/main.py
+@@ -0,0 +1,177 @@
++"""FastAPI application exposing OpenAPI specifications and health check."""
++from fastapi import FastAPI, HTTPException, status
++from pilot.app.backend.models import (
++    DocumentUploadAccepted,
++    DocumentResponse,
++    JobAcceptedResponse,
++    JobStatusResponse,
++    ExamGenerateRequest,
++    ExamDetailResponse,
++    SessionStartResponse,
++    SaveAnswersRequest,
++    SaveAnswersResponse,
++    SessionReportResponse,
++    StudySummarizeRequest,
++    StudySummarizeResponse,
++    ReadinessDashboardResponse,
++)
++
++app = FastAPI(
++    title="AI-Powered Adaptive Exam Preparation System API",
++    version="0.1.0",
++    description="OpenAPI contract definition for AI-Powered Adaptive Exam Preparation System.",
++)
++
++
++@app.get("/api/v1/health", tags=["System"])
++def health_check():
++    return {"status": "ok"}
++
++
++@app.post(
++    "/api/v1/documents",
++    status_code=status.HTTP_202_ACCEPTED,
++    response_model=DocumentUploadAccepted,
++    tags=["Ingestion"],
++)
++def upload_document():
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Ingestion pipeline not yet implemented.",
++    )
++
++
++@app.get(
++    "/api/v1/documents/{document_id}",
++    response_model=DocumentResponse,
++    tags=["Ingestion"],
++)
++def get_document(document_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Document retrieval not yet implemented.",
++    )
++
++
++@app.post(
++    "/api/v1/documents/{document_id}/decompose",
++    status_code=status.HTTP_202_ACCEPTED,
++    response_model=JobAcceptedResponse,
++    tags=["Decomposition"],
++)
++def decompose_exam(document_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Exam decomposition not yet implemented.",
++    )
++
++
++@app.get(
++    "/api/v1/jobs/{job_id}",
++    response_model=JobStatusResponse,
++    tags=["Jobs"],
++)
++def get_job_status(job_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Job tracking not yet implemented.",
++    )
++
++
++@app.post(
++    "/api/v1/exams/generate",
++    status_code=status.HTTP_202_ACCEPTED,
++    response_model=JobAcceptedResponse,
++    tags=["Generation"],
++)
++def generate_exam(payload: ExamGenerateRequest):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Exam generation not yet implemented.",
++    )
++
++
++@app.get(
++    "/api/v1/exams/{exam_id}",
++    response_model=ExamDetailResponse,
++    tags=["Generation"],
++)
++def get_exam(exam_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Exam retrieval not yet implemented.",
++    )
++
++
++@app.post(
++    "/api/v1/exams/{exam_id}/sessions",
++    status_code=status.HTTP_201_CREATED,
++    response_model=SessionStartResponse,
++    tags=["Execution"],
++)
++def start_session(exam_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Exam session creation not yet implemented.",
++    )
++
++
++@app.put(
++    "/api/v1/exams/sessions/{session_id}/answers",
++    response_model=SaveAnswersResponse,
++    tags=["Execution"],
++)
++def save_answers(session_id: str, payload: SaveAnswersRequest):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Answer persistence not yet implemented.",
++    )
++
++
++@app.post(
++    "/api/v1/exams/sessions/{session_id}/submit",
++    status_code=status.HTTP_202_ACCEPTED,
++    response_model=JobAcceptedResponse,
++    tags=["Execution"],
++)
++def submit_session(session_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Session submission not yet implemented.",
++    )
++
++
++@app.get(
++    "/api/v1/exams/sessions/{session_id}/report",
++    response_model=SessionReportResponse,
++    tags=["Execution"],
++)
++def get_session_report(session_id: str):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Session reporting not yet implemented.",
++    )
++
++
++@app.post(
++    "/api/v1/study/summarize",
++    response_model=StudySummarizeResponse,
++    tags=["Study Synthesis"],
++)
++def summarize_study_material(payload: StudySummarizeRequest):
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Study summarization not yet implemented.",
++    )
++
++
++@app.get(
++    "/api/v1/diagnostics/readiness",
++    response_model=ReadinessDashboardResponse,
++    tags=["Diagnostics"],
++)
++def get_readiness_dashboard():
++    raise HTTPException(
++        status_code=status.HTTP_501_NOT_IMPLEMENTED,
++        detail="Readiness diagnostics not yet implemented.",
++    )
+--- /dev/null
++++ b/tests/test_backend_t1.py
+@@ -0,0 +1,86 @@
++"""Tests for T1 backend slice: database schema initialization and OpenAPI contract definition."""
++import os
++import sqlite3
++import tempfile
++import pytest
++from pilot.app.backend.db import init_db, get_connection
++from pilot.app.backend.main import app
++
++
++def test_init_db_creates_expected_tables_in_temp_file():
++    with tempfile.TemporaryDirectory() as tmp_dir:
++        db_path = os.path.join(tmp_dir, "test_backend.db")
++        assert not os.path.exists(db_path)
++
++        init_db(db_path)
++        assert os.path.exists(db_path)
++
++        conn = get_connection(db_path)
++        cursor = conn.cursor()
++        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
++        tables = {row[0] for row in cursor.fetchall()}
++        conn.close()
++
++        expected_tables = {
++            "users",
++            "documents",
++            "exam_blueprints",
++            "generated_exams",
++            "questions",
++            "exam_sessions",
++            "exam_answers",
++            "longitudinal_mastery",
++        }
++        assert expected_tables.issubset(tables)
++
++
++def test_foreign_key_and_unique_constraints():
++    with tempfile.TemporaryDirectory() as tmp_dir:
++        db_path = os.path.join(tmp_dir, "test_constraints.db")
++        init_db(db_path)
++        conn = get_connection(db_path)
++        cursor = conn.cursor()
++
++        # Foreign key enforcement check (inserting document without user)
++        with pytest.raises(sqlite3.IntegrityError):
++            cursor.execute(
++                """INSERT INTO documents (id, user_id, title, doc_type, storage_path, status)
++                   VALUES ('doc_1', 'nonexistent_user', 'title', 'EXAM_SAMPLE', '/tmp/p', 'PENDING');"""
++            )
++            conn.commit()
++
++        # Insert valid user and document
++        cursor.execute("INSERT INTO users (id, email) VALUES ('u1', 'test@example.com');")
++        cursor.execute(
++            """INSERT INTO documents (id, user_id, title, doc_type, storage_path, status)
++               VALUES ('doc_1', 'u1', 'title', 'EXAM_SAMPLE', '/tmp/p', 'PENDING');"""
++        )
++        conn.commit()
++
++        # Verify longitudinal_mastery UNIQUE(user_id, topic) constraint
++        cursor.execute(
++            """INSERT INTO longitudinal_mastery (id, user_id, topic, total_attempts, successful_attempts, mastery_rating)
++               VALUES ('m1', 'u1', 'Algorithms', 1, 1, 1.0);"""
++        )
++        conn.commit()
++        with pytest.raises(sqlite3.IntegrityError):
++            cursor.execute(
++                """INSERT INTO longitudinal_mastery (id, user_id, topic, total_attempts, successful_attempts, mastery_rating)
++                   VALUES ('m2', 'u1', 'Algorithms', 2, 2, 1.0);"""
++            )
++            conn.commit()
++        conn.close()
++
++
++def test_memory_database_is_disallowed():
++    with pytest.raises(ValueError):
++        get_connection(":memory:")
++
++
++def test_openapi_contract_generation():
++    openapi_schema = app.openapi()
++    assert "paths" in openapi_schema
++    assert "/api/v1/documents" in openapi_schema["paths"]
++    assert "/api/v1/exams/generate" in openapi_schema["paths"]
++    assert "/api/v1/exams/sessions/{session_id}/report" in openapi_schema["paths"]
++    assert "/api/v1/diagnostics/readiness" in openapi_schema["paths"]
