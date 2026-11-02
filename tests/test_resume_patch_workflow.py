@@ -139,9 +139,12 @@ def test_patch_generation_requires_both_approvals(
 
     result = workflow_main.run_resume_patch(tmp_path, orchestrator)
 
+    # The fake proposal files do not exist, so the Git step reports that it
+    # could not run (None) instead of creating an agent branch.
     assert result == (
         tmp_path / "proposal.patch",
         tmp_path / "report.json",
+        None,
     )
     assert orchestrator.workflow_state["backlog_approved"] is True
     assert orchestrator.workflow_state["architecture_approved"] is True

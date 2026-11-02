@@ -9,6 +9,7 @@ from agents.agent_contracts import BackendDeveloperResult
 from agents.backend_developer import BackendDeveloperAgent
 from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
+from agents.pilot_git_agent import PilotGitAgent
 from agents.software_architect import SoftwareArchitectAgent
 from agents.testing_workflow import run_task_tests
 from agents.ticket_quality_checker import TicketQualityChecker
@@ -562,7 +563,7 @@ def request_fresh_approvals(project_root, orchestrator, next_step, require_h2=Tr
     return snapshot, architecture
 
 
-def run_resume_patch(project_root, orchestrator, agent=None):
+def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None):
     """Load saved context, request fresh approvals, and offer a patch."""
 
     project_root = Path(project_root)
@@ -637,13 +638,62 @@ def run_resume_patch(project_root, orchestrator, agent=None):
         print("No GitHub synchronization was performed.")
         return None
 
-    print("\nPatch proposal created. No project source files were changed.")
+    print("\nPatch proposal created.")
     print(f"Patch:  {patch_path}")
     print(f"Report: {report_path}")
-    print("Review the patch before applying it.")
+
+    # The Pilot Git Agent applies the proposal on its own agent/ branch in the
+    # pilot workspace. Nothing is pushed or merged before the H3 decision.
+    agent_commit = apply_patch_with_pilot_git_agent(
+        project_root=project_root,
+        patch_path=patch_path,
+        report_path=report_path,
+        record_paths=[patch_path, report_path, snapshot_path],
+        git_agent=git_agent,
+    )
+
     print("No GitHub synchronization was performed.")
 
-    return patch_path, report_path
+    return patch_path, report_path, agent_commit
+
+
+def short_subject(summary, limit=72):
+    """First sentence of the agent's summary, short enough for a commit title."""
+    first = summary.strip().split(". ")[0].rstrip(".")
+    return first if len(first) <= limit else first[: limit - 3].rstrip() + "..."
+
+
+def apply_patch_with_pilot_git_agent(project_root, patch_path, report_path, record_paths, git_agent=None):
+    """Let the Pilot Git Agent commit the proposal on a new agent/ branch.
+
+    Returns the AgentCommitResult, or None when the step could not run; the
+    proposal files are then kept for review and the workspace is unchanged.
+    """
+
+    try:
+        report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+        git_agent = git_agent or PilotGitAgent(
+            project_root,
+            workflow_root=Path(__file__).resolve().parent,
+        )
+        agent_commit = git_agent.apply_patch_on_new_branch(
+            task_id=report["task_id"],
+            patch_path=patch_path,
+            changed_files=[item["path"] for item in report["changed_files"]],
+            summary=short_subject(report["summary"]),
+            record_paths=record_paths,
+        )
+    except Exception as error:
+        print(f"\nThe Pilot Git Agent could not apply the patch: {error}")
+        print("The proposal is kept for review. No agent branch was created.")
+        return None
+
+    print(f"\nThe Pilot Git Agent committed the patch on branch: {agent_commit.branch}")
+    print(f"Code commit:    {agent_commit.code_commit}")
+    print(f"Records commit: {agent_commit.records_commit}")
+    print(f"Files:          {', '.join(agent_commit.committed_files)}")
+    print("Not pushed and not merged: this waits for the tests and the H3 decision.")
+    return agent_commit
 
 
 def run_t1_tests(project_root, orchestrator, test_paths=None):
