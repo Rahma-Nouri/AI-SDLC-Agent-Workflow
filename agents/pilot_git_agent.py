@@ -38,6 +38,10 @@ class PilotGitError(RuntimeError):
     """Raised when the Git step must stop; the workspace is left as it was."""
 
 
+class FrozenFilesError(PilotGitError):
+    """Raised when a fix tries to change files that are frozen (the tests)."""
+
+
 class PilotGitAgent:
     def __init__(self, pilot_root, workflow_root=None, timeout_seconds=60):
         self.pilot_root = Path(pilot_root).resolve()
@@ -168,6 +172,88 @@ class PilotGitAgent:
             records_commit=records_commit,
             committed_files=declared,
         )
+
+    # --- correction loop (P1.5) --------------------------------------------
+
+    def current_agent_branch(self):
+        """The agent branch the workspace is on; refuses any other branch."""
+        branch = self._git("branch", "--show-current").stdout.strip()
+        if not branch.startswith(BRANCH_PREFIX):
+            raise PilotGitError(f"Expected an agent branch, but the workspace is on '{branch}'.")
+        return branch
+
+    def commit_fix_on_current_branch(
+        self, task_id, patch_path, changed_files, summary, record_paths=(), frozen_prefixes=("tests/",)
+    ):
+        """Apply a fix on the CURRENT agent branch and commit it.
+
+        Files under frozen_prefixes (the tests) may not change during a fix:
+        an AI asked to "make the tests pass" could otherwise weaken the tests.
+        If anything fails, only the fix is undone; the earlier commits stay.
+        """
+
+        patch_path = Path(patch_path).resolve()
+        records = [self._relative(path) for path in record_paths]
+        declared = sorted(set(changed_files))
+
+        frozen = [path for path in declared if path.startswith(tuple(frozen_prefixes))]
+        if frozen:
+            raise FrozenFilesError("The fix tried to change frozen test files: " + ", ".join(frozen))
+
+        branch = self.current_agent_branch()
+        unexpected = [path for path in self._changed_paths() if path not in set(records)]
+        if unexpected:
+            raise PilotGitError("The pilot workspace has unexpected changes: " + ", ".join(unexpected))
+
+        self._git("apply", "--check", str(patch_path))
+        state = {"applied": False, "committed": False}
+
+        try:
+            self._git("apply", str(patch_path))
+            state["applied"] = True
+
+            # A test file the agent did not declare also counts as "not declared".
+            touched = [path for path in self._changed_paths() if path not in set(records)]
+            if touched != declared:
+                raise PilotGitError(f"The fix changed {touched}, but the agent declared {declared}.")
+
+            identity = ["-c", f"user.name={AGENT_NAME}", "-c", f"user.email={AGENT_EMAIL}"]
+            self._git("add", "--", *declared)
+            self._git(
+                *identity, "commit", "-m", f"[{task_id}] Fix: {summary}",
+                "-m", "Proposed by the Backend Developer Agent after failing tests (correction loop). Not approved yet: waiting for the H3 decision.",
+            )
+            code_commit = self._git("rev-parse", "--short", "HEAD").stdout.strip()
+            state["committed"] = True
+        except Exception:
+            if state["applied"] and not state["committed"]:
+                self._git("reset", "--quiet", check=False)
+                self._git("apply", "-R", str(patch_path), check=False)
+            raise
+
+        records_commit = self.commit_records(task_id, record_paths, "Record the fix proposal and report")
+
+        return AgentCommitResult(
+            task_id=task_id,
+            branch=branch,
+            base_branch=BASE_BRANCH,
+            code_commit=code_commit,
+            records_commit=records_commit,
+            committed_files=declared,
+        )
+
+    def commit_records(self, task_id, record_paths, message):
+        """Commit run records (reports, proposals) on the current agent branch."""
+        self.current_agent_branch()
+        records = [self._relative(path) for path in record_paths]
+        to_commit = [path for path in records if path in self._changed_paths()]
+        if not to_commit:
+            return None
+
+        identity = ["-c", f"user.name={AGENT_NAME}", "-c", f"user.email={AGENT_EMAIL}"]
+        self._git("add", "--", *to_commit)
+        self._git(*identity, "commit", "-m", f"[{task_id}] {message}")
+        return self._git("rev-parse", "--short", "HEAD").stdout.strip()
 
     def _undo_branch(self, branch, patch_path, state):
         """Go back to the base branch and remove the failed attempt.

@@ -1,5 +1,6 @@
 """Run approved pytest targets and report execution evidence."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -48,13 +49,20 @@ class TestingAgent:
 
             safe_paths.append(candidate.as_posix())
 
+        # "-p no:cacheprovider" stops pytest from creating .pytest_cache, and
+        # PYTHONDONTWRITEBYTECODE stops Python from creating __pycache__.
+        # Running tests must not leave new files in the project it checks:
+        # in the pilot workspace those files would look like unexpected changes.
         command_args = [
             sys.executable,
             "-m",
             "pytest",
             *safe_paths,
             "-q",
+            "-p",
+            "no:cacheprovider",
         ]
+        environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
         display_command = subprocess.list2cmdline(command_args)
 
         try:
@@ -66,6 +74,7 @@ class TestingAgent:
                 timeout=self.timeout_seconds,
                 check=False,
                 shell=False,
+                env=environment,
             )
             output = (completed.stdout or "") + (completed.stderr or "")
             output = output[-self.output_limit :]

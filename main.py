@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agents.agent_contracts import BackendDeveloperResult
 from agents.backend_developer import BackendDeveloperAgent
+from agents.correction_loop import run_correction_loop
 from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
 from agents.pilot_git_agent import PilotGitAgent
@@ -360,12 +361,18 @@ def create_t1_backend_patch(
             "The Backend Developer Agent must return a BackendDeveloperResult."
         )
 
+    return save_patch_proposal(result, output_dir)
+
+
+def save_patch_proposal(result, output_dir, label=""):
+    """Save an agent's patch and report; label marks fixes, e.g. "fix1_"."""
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    patch_path = output_dir / f"T1_backend_{timestamp}.patch"
-    report_path = output_dir / f"T1_backend_{timestamp}_report.json"
+    patch_path = output_dir / f"{result.task_id}_backend_{label}{timestamp}.patch"
+    report_path = output_dir / f"{result.task_id}_backend_{label}{timestamp}_report.json"
 
     # Write the patch with LF ("\n") line endings on every operating system.
     # Without newline="\n", Windows text mode turns each "\n" into "\r\n",
@@ -644,6 +651,10 @@ def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None):
 
     # The Pilot Git Agent applies the proposal on its own agent/ branch in the
     # pilot workspace. Nothing is pushed or merged before the H3 decision.
+    git_agent = git_agent or PilotGitAgent(
+        project_root,
+        workflow_root=Path(__file__).resolve().parent,
+    )
     agent_commit = apply_patch_with_pilot_git_agent(
         project_root=project_root,
         patch_path=patch_path,
@@ -652,9 +663,87 @@ def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None):
         git_agent=git_agent,
     )
 
+    loop_report = None
+    if agent_commit is not None:
+        loop_report = run_and_record_correction_loop(
+            orchestrator=orchestrator,
+            task=next(item for item in tasks if item.get("task_id") == agent_commit.task_id),
+            architecture=architecture,
+            project_root=project_root,
+            report_path=report_path,
+            agent_commit=agent_commit,
+            backend_agent=agent,
+            git_agent=git_agent,
+        )
+
     print("No GitHub synchronization was performed.")
 
-    return patch_path, report_path, agent_commit
+    return {
+        "patch_path": patch_path,
+        "report_path": report_path,
+        "agent_commit": agent_commit,
+        "loop_report": loop_report,
+    }
+
+
+def build_pilot_project_context(project_root):
+    """What the Backend Agent sees: pilot documents plus the current files."""
+
+    project_root = Path(project_root)
+    context = {
+        "pilot_specification": read_text_file(project_root / "pilot" / "pilot_specification.md"),
+        "readme": read_text_file(project_root / "README.md"),
+        "requirements": read_text_file(project_root / "requirements.txt"),
+        "python_version": sys.version,
+    }
+    context.update(collect_backend_file_context(project_root))
+    return context
+
+
+def run_and_record_correction_loop(
+    orchestrator, task, architecture, project_root, report_path, agent_commit, backend_agent, git_agent
+):
+    """Run the correction loop on the agent branch and commit its report there."""
+
+    project_root = Path(project_root)
+    first_result = BackendDeveloperResult.model_validate_json(
+        Path(report_path).read_text(encoding="utf-8")
+    )
+
+    print(f"\nCORRECTION LOOP on {agent_commit.branch}")
+    loop_report = run_correction_loop(
+        orchestrator=orchestrator,
+        task=task,
+        architecture=architecture,
+        pilot_root=project_root,
+        first_result=first_result,
+        branch=agent_commit.branch,
+        backend_agent=backend_agent or BackendDeveloperAgent(),
+        git_agent=git_agent,
+        build_project_context=build_pilot_project_context,
+        save_proposal=lambda result, label: save_patch_proposal(
+            result, project_root / "outputs" / "proposed_changes", label
+        ),
+    )
+
+    output_dir = project_root / "outputs" / "test_results"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    loop_path = output_dir / f"{task['task_id']}_correction_loop_{timestamp}.json"
+    loop_path.write_text(loop_report.model_dump_json(indent=2), encoding="utf-8", newline="\n")
+    git_agent.commit_records(task["task_id"], [loop_path], "Record the correction loop report")
+
+    print(f"Tests generated: {', '.join(loop_report.tests_generated) or 'none'}")
+    print(f"Tests run:       {', '.join(loop_report.tests_run) or 'none'}")
+    for run in loop_report.runs:
+        print(f"Run {run.attempt}: exit code {run.exit_code}, passed {run.passed}")
+    for fix in loop_report.fix_attempts:
+        print(f"Fix {fix.attempt}: {fix.outcome} - {fix.detail}")
+    print(f"Final result: {loop_report.final_result} -> {loop_report.decision}")
+    print(f"Loop report committed on {agent_commit.branch}: {loop_path}")
+    print("Waiting for the H3 decision. Nothing was pushed or merged.")
+
+    return loop_report
 
 
 def short_subject(summary, limit=72):

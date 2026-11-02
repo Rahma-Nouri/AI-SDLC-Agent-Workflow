@@ -43,7 +43,10 @@ def test_runner_records_a_successful_pytest_execution(tmp_path, monkeypatch):
         "pytest",
         "tests/test_example.py",
         "-q",
+        "-p",
+        "no:cacheprovider",
     ]
+    assert captured["kwargs"]["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert captured["kwargs"]["shell"] is False
     assert captured["kwargs"]["cwd"] == tmp_path.resolve()
 
