@@ -10,7 +10,8 @@ from agents.backend_developer import BackendDeveloperAgent
 from agents.correction_loop import run_correction_loop
 from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
-from agents.pilot_git_agent import PilotGitAgent
+from agents.pilot_environment import PilotEnvironment
+from agents.pilot_git_agent import PilotGitAgent, PilotGitError
 from agents.software_architect import SoftwareArchitectAgent
 from agents.testing_workflow import run_task_tests
 from agents.ticket_quality_checker import TicketQualityChecker
@@ -701,7 +702,8 @@ def build_pilot_project_context(project_root):
 
 
 def run_and_record_correction_loop(
-    orchestrator, task, architecture, project_root, report_path, agent_commit, backend_agent, git_agent
+    orchestrator, task, architecture, project_root, report_path, agent_commit, backend_agent, git_agent,
+    environment=None,
 ):
     """Run the correction loop on the agent branch and commit its report there."""
 
@@ -724,15 +726,25 @@ def run_and_record_correction_loop(
         save_proposal=lambda result, label: save_patch_proposal(
             result, project_root / "outputs" / "proposed_changes", label
         ),
+        prepare_environment=(environment or PilotEnvironment(project_root)).prepare,
     )
 
-    output_dir = project_root / "outputs" / "test_results"
+    record_loop_report(project_root, task["task_id"], loop_report, git_agent, "correction_loop")
+    return loop_report
+
+
+def record_loop_report(project_root, task_id, loop_report, git_agent, kind):
+    """Save the loop report, let the agent commit it, and print a summary."""
+
+    output_dir = Path(project_root) / "outputs" / "test_results"
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    loop_path = output_dir / f"{task['task_id']}_correction_loop_{timestamp}.json"
+    loop_path = output_dir / f"{task_id}_{kind}_{timestamp}.json"
     loop_path.write_text(loop_report.model_dump_json(indent=2), encoding="utf-8", newline="\n")
-    git_agent.commit_records(task["task_id"], [loop_path], "Record the correction loop report")
+    git_agent.commit_records(task_id, [loop_path], f"Record the {kind.replace('_', ' ')} report")
 
+    for check in loop_report.environment:
+        print(f"Environment: {check.status} - {check.detail}")
     print(f"Tests generated: {', '.join(loop_report.tests_generated) or 'none'}")
     print(f"Tests run:       {', '.join(loop_report.tests_run) or 'none'}")
     for run in loop_report.runs:
@@ -740,9 +752,55 @@ def run_and_record_correction_loop(
     for fix in loop_report.fix_attempts:
         print(f"Fix {fix.attempt}: {fix.outcome} - {fix.detail}")
     print(f"Final result: {loop_report.final_result} -> {loop_report.decision}")
-    print(f"Loop report committed on {agent_commit.branch}: {loop_path}")
+    print(f"Report committed on {loop_report.branch}: {loop_path}")
     print("Waiting for the H3 decision. Nothing was pushed or merged.")
 
+
+def run_retest_agent_branch(project_root, orchestrator, git_agent=None, environment=None):
+    """Re-run the tests on the waiting agent branch, without any Gemini request.
+
+    Useful after the environment changed (for example: packages now installed).
+    The tests are the test files the agent branch added; no fix is attempted.
+    """
+
+    project_root = Path(project_root)
+    approved = request_fresh_approvals(project_root, orchestrator, next_step="the re-test")
+    if approved is None:
+        return None
+    snapshot, architecture = approved
+
+    git_agent = git_agent or PilotGitAgent(project_root, workflow_root=Path(__file__).resolve().parent)
+    try:
+        branch = git_agent.current_agent_branch()
+        tests = git_agent.files_added_on_branch("tests/")
+    except PilotGitError as error:
+        print(f"\nNothing to re-test: {error}")
+        return None
+
+    # agent/T1-attempt-1 -> T1
+    task_id = branch[len("agent/"):].split("-attempt-")[0]
+    task = next((item for item in snapshot["tasks"] if item.get("task_id") == task_id), None)
+    if task is None:
+        print(f"\nTask {task_id} of branch {branch} is not in the approved backlog.")
+        return None
+
+    print(f"\nRE-TEST on {branch} (no Gemini request)")
+    loop_report = run_correction_loop(
+        orchestrator=orchestrator,
+        task=task,
+        architecture=architecture,
+        pilot_root=project_root,
+        first_result=None,
+        tests_generated=tests,
+        branch=branch,
+        backend_agent=None,
+        git_agent=git_agent,
+        build_project_context=build_pilot_project_context,
+        save_proposal=None,
+        prepare_environment=(environment or PilotEnvironment(project_root)).prepare,
+        max_fix_attempts=0,
+    )
+    record_loop_report(project_root, task_id, loop_report, git_agent, "retest")
     return loop_report
 
 
@@ -922,6 +980,11 @@ def main(argv=None):
         help="Request fresh H1 and H2 approvals, then run and save the T1 tests.",
     )
     parser.add_argument(
+        "--retest-agent-branch",
+        action="store_true",
+        help="Request fresh H1 and H2, then re-run the tests on the waiting agent branch (no Gemini request).",
+    )
+    parser.add_argument(
         "--sync-pilot-issues",
         action="store_true",
         help="Request a fresh H1, then align the pilot's GitHub Issues with the approved backlog.",
@@ -959,6 +1022,13 @@ def main(argv=None):
 
     if args.run_t1_tests:
         run_t1_tests(
+            project_root=project_root,
+            orchestrator=orchestrator,
+        )
+        return
+
+    if args.retest_agent_branch:
+        run_retest_agent_branch(
             project_root=project_root,
             orchestrator=orchestrator,
         )

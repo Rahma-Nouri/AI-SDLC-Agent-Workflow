@@ -271,6 +271,11 @@ class PilotGitAgent:
             committed_files=declared,
         )
 
+    def files_added_on_branch(self, prefix="tests/"):
+        """Files under prefix that the agent branch added or changed vs. the base."""
+        output = self._git("diff", "--name-only", f"{BASE_BRANCH}...HEAD", "--", prefix).stdout
+        return sorted(line.strip() for line in output.splitlines() if line.strip())
+
     def commit_records(self, task_id, record_paths, message):
         """Commit run records (reports, proposals) on the current agent branch."""
         self.current_agent_branch()

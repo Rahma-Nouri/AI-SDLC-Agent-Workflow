@@ -10,6 +10,7 @@ def run_task_tests(
     test_paths,
     architecture=None,
     project_context=None,
+    python_executable=None,
 ):
     """Run tests for an approved task and return evidence plus review status."""
 
@@ -20,7 +21,7 @@ def run_task_tests(
         project_context=project_context,
     )
 
-    testing_result = TestingAgent(project_root).run_pytest(
+    testing_result = TestingAgent(project_root, python_executable=python_executable).run_pytest(
         task_id=task["task_id"],
         test_paths=test_paths,
     )

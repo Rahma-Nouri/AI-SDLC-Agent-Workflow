@@ -15,6 +15,7 @@ The loop never approves anything. Its report ends with "ready_for_review" or
 from typing import Literal
 
 from agents.agent_contracts import ContractModel
+from agents.pilot_environment import EnvironmentResult
 from agents.pilot_git_agent import FrozenFilesError, PilotGitError
 from agents.testing_workflow import run_task_tests
 
@@ -48,9 +49,10 @@ class CorrectionLoopReport(ContractModel):
     branch: str
     tests_generated: list[str]  # declared by the Backend Agent
     tests_run: list[str]  # the declared tests that really exist and were run
+    environment: list[EnvironmentResult] = []  # one check before each test run
     runs: list[TestRunSummary]
     fix_attempts: list[FixAttempt]
-    final_result: Literal["passed", "failed", "no_tests"]
+    final_result: Literal["passed", "failed", "no_tests", "environment_not_ready"]
     decision: Literal["ready_for_review", "needs_revision"]
 
 
@@ -97,16 +99,25 @@ def run_correction_loop(
     build_project_context,
     save_proposal,
     run_tests=run_task_tests,
+    prepare_environment=None,
+    tests_generated=None,
+    max_fix_attempts=MAX_FIX_ATTEMPTS,
 ):
     """Run the tests, allow one fix, run them again, and return the report.
 
     build_project_context(pilot_root) -> dict: current files on the branch.
     save_proposal(result, label) -> (patch_path, report_path): saves a fix proposal.
+    prepare_environment() -> EnvironmentResult: the pilot's own Python with its
+        approved packages; checked before every test run, because a fix may
+        change requirements.txt. None = use the workflow's Python (tests only).
+    tests_generated: the tests to run; by default the agent's own tests_added.
+    max_fix_attempts: 0 = only re-run the tests (no Gemini request).
     """
 
     task_id = task["task_id"]
-    tests_generated = list(first_result.tests_added)
+    tests_generated = list(first_result.tests_added if tests_generated is None else tests_generated)
     tests_run = [path for path in tests_generated if (pilot_root / path).is_file()]
+    environment = []
 
     def report(runs, fixes, final_result):
         return CorrectionLoopReport(
@@ -114,6 +125,7 @@ def run_correction_loop(
             branch=branch,
             tests_generated=tests_generated,
             tests_run=tests_run,
+            environment=environment,
             runs=runs,
             fix_attempts=fixes,
             final_result=final_result,
@@ -124,10 +136,29 @@ def run_correction_loop(
     if not tests_run:
         return report([], [], "no_tests")
 
-    runs = [summarize_run(run_tests(orchestrator, task, pilot_root, tests_run, architecture=architecture), 0)]
+    def run_once(attempt):
+        """Prepare the environment, then run the tests. None = environment not ready."""
+        python = None
+        if prepare_environment is not None:
+            check = prepare_environment()
+            environment.append(check)
+            if check.status != "ready":
+                return None
+            python = check.python
+        evidence = run_tests(
+            orchestrator, task, pilot_root, tests_run,
+            architecture=architecture, python_executable=python,
+        )
+        return summarize_run(evidence, attempt)
+
+    first_run = run_once(0)
+    if first_run is None:
+        return report([], [], "environment_not_ready")
+
+    runs = [first_run]
     fixes = []
 
-    for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
+    for attempt in range(1, max_fix_attempts + 1):
         if runs[-1].passed:
             break
 
@@ -168,6 +199,9 @@ def run_correction_loop(
             attempt=attempt, outcome="committed", detail=fix.summary,
             patch_path=str(patch_path), code_commit=commit.code_commit,
         ))
-        runs.append(summarize_run(run_tests(orchestrator, task, pilot_root, tests_run, architecture=architecture), attempt))
+        next_run = run_once(attempt)
+        if next_run is None:
+            return report(runs, fixes, "environment_not_ready")
+        runs.append(next_run)
 
     return report(runs, fixes, "passed" if runs[-1].passed else "failed")

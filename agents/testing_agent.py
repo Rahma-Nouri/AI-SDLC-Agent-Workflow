@@ -11,8 +11,11 @@ from agents.agent_contracts import TestCheckResult, TestingAgentResult
 class TestingAgent:
     """Run tests locally without making approval decisions."""
 
-    def __init__(self, project_root, timeout_seconds=300, output_limit=12000):
+    def __init__(self, project_root, timeout_seconds=300, output_limit=12000, python_executable=None):
         self.project_root = Path(project_root).resolve()
+        # The pilot runs its tests with its own environment's Python, so its
+        # packages stay separate from the workflow's (World 1 vs World 2).
+        self.python_executable = str(python_executable or sys.executable)
         self.timeout_seconds = timeout_seconds
         self.output_limit = output_limit
 
@@ -54,7 +57,7 @@ class TestingAgent:
         # Running tests must not leave new files in the project it checks:
         # in the pilot workspace those files would look like unexpected changes.
         command_args = [
-            sys.executable,
+            self.python_executable,
             "-m",
             "pytest",
             *safe_paths,
