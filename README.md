@@ -53,6 +53,7 @@ Run from the workflow folder with the virtual environment active:
 | Command | What it does | Gemini requests |
 |---|---|---|
 | `python main.py --resume-patch` | Fresh H1/H2 on the saved approved context, then: patch → agent branch → environment → tests → (one fix) → report; waits for H3 | 1 (+1 if a fix is needed) |
+| `python main.py --h2b-ui-stack` | H2b: the Architect proposes the UI stack from the approved snapshot; approve stores it as `ui_stack` in the snapshot, revise sends feedback to the Architect, reject stores nothing. Each decision is saved in `outputs/approvals/` | 1 (+1 per revise) |
 | `python main.py --h3-review` | H3 on the waiting agent branch: approve / revise / reject | 0 (revise: 1) |
 | `python main.py --retest-agent-branch` | Re-runs the tests on the waiting agent branch | 0 |
 | `python main.py --sync-pilot-issues` | Fresh H1, then the Issue Sync Agent aligns the pilot's GitHub Issues with the approved backlog (shows its plan first) | 0 |

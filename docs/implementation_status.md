@@ -13,7 +13,8 @@
 | Date | Command | Result |
 |---|---|---|
 | 29 Oct 2026 | `python -m pytest -q` | 63 passed, 1 skipped |
-| 2 Nov 2026 (after P1.8, `434002f`) | `python -m pytest -q` | **120 passed, 1 skipped** |
+| 2 Nov 2026 (after P1.8, `434002f`) | `python -m pytest -q` | 120 passed, 1 skipped |
+| 7 Nov 2026 (after P2.2a) | `python -m pytest -q` | **154 passed, 1 skipped** |
 
 The skipped test is the opt-in live Gemini check (`RUN_LIVE_GEMINI_TESTS=1`). All other tests run offline, using a fake Gemini agent and temporary Git repositories.
 
@@ -36,7 +37,9 @@ The approved snapshot `outputs/approved_context/current_approved_context.json` (
 | P1.5c | `71e4eb1` | Pilot's own `.venv` with human-approved packages; `--retest-agent-branch` |
 | P1.6 | `0eeecae` | H3 gate: approve (merge + push + issue comment) / revise (feedback → agent) / reject (branch deleted) |
 | P1.8 | `434002f` | Automatic checks on the agent's code (imports vs requirements, unclosed resources), shown at H3 |
-| P1.9 | this change | README and documentation updated to the current state |
+| P1.9 | `b839709` | README and documentation updated to the current state |
+| P2.1, P2.1b | `a18a30b`, `8129a55` | Project-context document; whole spec for the Backend Agent, empty README removed, agent's own claims shown at H3 |
+| P2.2a | this change | H2b gate (`--h2b-ui-stack`): the Architect proposes the UI stack, the human decides, approved stack stored as `ui_stack` in the snapshot. Built and tested offline; not yet run with real Gemini |
 
 ## 4. Real-Run Evidence
 

@@ -1,6 +1,7 @@
+from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 class ContractModel(BaseModel):
@@ -77,3 +78,43 @@ class TestingAgentResult(ContractModel):
     task_id: str = Field(min_length=1)
     summary: str = Field(min_length=1)
     checks: list[TestCheckResult] = Field(min_length=1)
+
+
+class UiStackReasons(ContractModel):
+    """One reason for each UI stack choice."""
+
+    # str_strip_whitespace: a text of only spaces counts as empty.
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    framework: str = Field(min_length=1)
+    language: str = Field(min_length=1)
+    build_tool: str = Field(min_length=1)
+    test_runner: str = Field(min_length=1)
+    package_manager: str = Field(min_length=1)
+    frontend_folder: str = Field(min_length=1)
+
+
+class UiStackProposal(ContractModel):
+    """The Architect's UI stack proposal, reviewed by the human at gate H2b."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    framework: str = Field(min_length=1)
+    language: Literal["JavaScript", "TypeScript"]
+    build_tool: str = Field(min_length=1)
+    test_runner: str = Field(min_length=1)
+    package_manager: str = Field(min_length=1)
+    frontend_folder: str = Field(min_length=1)
+    reasons: UiStackReasons
+    alternatives_considered: list[str] = Field(min_length=1)
+    risks: list[str] = Field(min_length=1)
+
+    @field_validator("frontend_folder")
+    @classmethod
+    def must_be_inside_the_frontend_folder(cls, value):
+        # Compare folder names, not text: a plain "starts with" check would
+        # also accept pilot/app/frontend-old or pilot/app/frontend/../backend.
+        path = PurePosixPath(value)
+        if "\\" in value or ".." in path.parts or path.parts[:3] != ("pilot", "app", "frontend"):
+            raise ValueError("frontend_folder must start with pilot/app/frontend")
+        return value

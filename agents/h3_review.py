@@ -61,11 +61,11 @@ def agent_reports_on_branch(git_agent, pilot_root, task_id):
     return reports
 
 
-def write_decision_record(pilot_root, task_id, payload):
+def write_decision_record(pilot_root, task_id, payload, gate="H3"):
     folder = Path(pilot_root) / "outputs" / "approvals"
     folder.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    path = folder / f"{task_id}_H3_{payload['decision']}_{timestamp}.json"
+    path = folder / f"{task_id}_{gate}_{payload['decision']}_{timestamp}.json"
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8", newline="\n")
     return path
 

@@ -43,6 +43,7 @@ class OrchestratorAgent:
             "plan_approved": False,
             "backlog_approved": False,
             "architecture_approved": False,
+            "ui_stack_approved": False,
             "implementation_accepted": False,
             "deployment_authorized": False,
             "tasks": {},
@@ -536,7 +537,7 @@ PROPOSED PLAN:
         persistent audit log or the actual approval process for that gate.
         """
 
-        valid_gates = {"H2", "H3", "H4"}
+        valid_gates = {"H2", "H2b", "H3", "H4"}
         valid_decisions = {"approve", "revise", "reject"}
 
         if gate not in valid_gates:
@@ -553,6 +554,7 @@ PROPOSED PLAN:
 
         state_key = {
             "H2": "architecture_approved",
+            "H2b": "ui_stack_approved",
             "H3": "implementation_accepted",
             "H4": "deployment_authorized",
         }[gate]

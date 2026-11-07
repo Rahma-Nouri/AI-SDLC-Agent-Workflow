@@ -4,6 +4,9 @@ import re
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
+
+from agents.agent_contracts import UiStackProposal
 
 
 class SoftwareArchitectAgent:
@@ -274,3 +277,88 @@ Return the architecture document in Markdown.
             )
 
         return architecture.strip()
+
+    def propose_ui_stack(
+        self,
+        specification,
+        architecture,
+        tasks,
+        previous_proposal=None,
+        feedback=None,
+    ):
+        """Propose the pilot's UI stack (or revise it): one Gemini request.
+
+        Returns a validated UiStackProposal. An invalid answer raises an error,
+        so an unchecked proposal can never reach the human.
+        """
+
+        if not isinstance(specification, str) or not specification.strip():
+            raise ValueError("Project specification cannot be empty.")
+
+        if not isinstance(architecture, str) or not architecture.strip():
+            raise ValueError("Approved architecture cannot be empty.")
+
+        task_list = "\n".join(
+            f"{task['task_id']}: {task['title']}" for task in tasks
+        )
+
+        revision_request = ""
+        if feedback:
+            revision_request = f"""
+PREVIOUS PROPOSAL
+{previous_proposal.model_dump_json(indent=2)}
+
+HUMAN REVIEWER FEEDBACK
+{feedback}
+
+Return the complete revised proposal. Address the feedback explicitly and
+keep the choices the feedback does not question.
+"""
+
+        prompt = f"""
+You are the Software Architect Agent in an AI-supported
+end-to-end software development workflow.
+
+Propose the user-interface technology stack for the pilot project.
+A later Frontend Developer Agent will build the UI with this stack.
+
+PILOT PROJECT SPECIFICATION
+{specification}
+
+APPROVED ARCHITECTURE
+{architecture}
+
+APPROVED DEVELOPMENT TASKS
+{task_list}
+{revision_request}
+Rules:
+- Make one final choice for each field. Do not answer "A or B".
+- Follow the approved architecture. If you must differ from it, say why
+  in the reason for that choice.
+- Prefer simple, free or open-source tools suitable for a beginner-friendly
+  proof of concept. Do not assume paid services are acceptable.
+- test_runner must run automatically from the command line, without a browser
+  window or a human, so that the Testing Agent can use it.
+- frontend_folder must start with pilot/app/frontend.
+- Give one reason per choice, at least one alternative considered, and at
+  least one risk.
+- Do not invent requirements. Do not generate application source code.
+"""
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_json_schema=UiStackProposal.model_json_schema(),
+            ),
+        )
+
+        response_text = getattr(response, "text", None)
+
+        if not isinstance(response_text, str) or not response_text.strip():
+            raise RuntimeError(
+                "The Software Architect Agent returned an empty UI stack proposal."
+            )
+
+        return UiStackProposal.model_validate_json(response_text)

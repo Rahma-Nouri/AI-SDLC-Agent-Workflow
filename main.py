@@ -8,6 +8,7 @@ from pathlib import Path
 from agents.agent_contracts import BackendDeveloperResult
 from agents.backend_developer import BackendDeveloperAgent
 from agents.correction_loop import run_correction_loop
+from agents.h2b_ui_stack import run_h2b_review
 from agents.h3_review import run_h3_review
 from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
@@ -388,6 +389,29 @@ def save_patch_proposal(result, output_dir, label=""):
     return patch_path, report_path
 
 
+def read_snapshot_if_valid(snapshot_path):
+    """The saved snapshot as a dict; {} if it is missing or unreadable."""
+
+    try:
+        snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
+def write_snapshot(snapshot_path, snapshot):
+    """Write to a temporary file first, so a crash cannot leave half a snapshot."""
+
+    temporary_path = snapshot_path.with_suffix(".json.tmp")
+
+    temporary_path.write_text(
+        json.dumps(snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_path.replace(snapshot_path)
+
+
 def save_approved_context(
     orchestrator,
     project_root,
@@ -407,7 +431,15 @@ def save_approved_context(
             "Cannot save context before H2 architecture approval."
         )
 
+    snapshot_dir = Path(project_root) / "outputs" / "approved_context"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    snapshot_path = snapshot_dir / "current_approved_context.json"
+
+    # Start from the saved snapshot, so fields this function does not write
+    # itself (such as "ui_stack" from gate H2b) are kept.
     snapshot = {
+        **read_snapshot_if_valid(snapshot_path),
         "schema_version": 1,
         "saved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source": "approved workflow run",
@@ -424,17 +456,7 @@ def save_approved_context(
         "architecture": architecture,
     }
 
-    snapshot_dir = Path(project_root) / "outputs" / "approved_context"
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-
-    snapshot_path = snapshot_dir / "current_approved_context.json"
-    temporary_path = snapshot_path.with_suffix(".json.tmp")
-
-    temporary_path.write_text(
-        json.dumps(snapshot, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary_path.replace(snapshot_path)
+    write_snapshot(snapshot_path, snapshot)
 
     return snapshot_path
 
@@ -968,6 +990,52 @@ def run_sync_pilot_issues(project_root, orchestrator, github_client=None):
     return result
 
 
+def run_h2b_ui_stack_command(project_root, orchestrator, architect=None, ask=input):
+    """H2b: the Architect proposes the UI stack and the human decides."""
+
+    project_root = Path(project_root)
+    snapshot_path = (
+        project_root
+        / "outputs"
+        / "approved_context"
+        / "current_approved_context.json"
+    )
+
+    try:
+        snapshot = load_approved_context(snapshot_path)
+    except ValueError as error:
+        print(f"\nH2b needs an approved snapshot: {error}")
+        print("Stopped. No Gemini request was made.")
+        return None
+
+    if snapshot.get("human_approvals", {}).get("H2") != "approved":
+        print("\nH2b needs an architecture approved at H2, and the snapshot has none.")
+        print("Stopped. No Gemini request was made.")
+        return None
+
+    if "ui_stack" in snapshot:
+        print("\nThe snapshot already has a UI stack. Approving a new one replaces it.")
+
+    try:
+        architect = architect or SoftwareArchitectAgent()
+    except ValueError as error:
+        print(f"\nThe Architect could not start: {error}")
+        return None
+
+    return run_h2b_review(
+        orchestrator=orchestrator,
+        architect=architect,
+        specification=read_text_file(project_root / "pilot" / "pilot_specification.md"),
+        snapshot=snapshot,
+        pilot_root=project_root,
+        store_ui_stack=lambda proposal: write_snapshot(
+            snapshot_path,
+            {**snapshot, "ui_stack": proposal.model_dump()},
+        ),
+        ask=ask,
+    )
+
+
 def run_h3_review_command(
     project_root, orchestrator, git_agent=None, environment=None, backend_agent=None, github_client=None, ask=input
 ):
@@ -1038,6 +1106,11 @@ def main(argv=None):
         help="Request fresh H1 and H2, then re-run the tests on the waiting agent branch (no Gemini request).",
     )
     parser.add_argument(
+        "--h2b-ui-stack",
+        action="store_true",
+        help="H2b: the Architect proposes the UI stack; approve, revise, or reject it.",
+    )
+    parser.add_argument(
         "--h3-review",
         action="store_true",
         help="H3: review the waiting agent branch and approve, revise, or reject it.",
@@ -1080,6 +1153,13 @@ def main(argv=None):
 
     if args.run_t1_tests:
         run_t1_tests(
+            project_root=project_root,
+            orchestrator=orchestrator,
+        )
+        return
+
+    if args.h2b_ui_stack:
+        run_h2b_ui_stack_command(
             project_root=project_root,
             orchestrator=orchestrator,
         )
