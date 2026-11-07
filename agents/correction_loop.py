@@ -54,6 +54,10 @@ class CorrectionLoopReport(ContractModel):
     fix_attempts: list[FixAttempt]
     final_result: Literal["passed", "failed", "no_tests", "environment_not_ready"]
     decision: Literal["ready_for_review", "needs_revision"]
+    # What started this report: the automatic loop, a re-test, or an H3 "revise".
+    trigger: Literal["automatic", "retest", "h3_revise"] = "automatic"
+    human_feedback: str | None = None
+    tests_may_change: bool = False  # only ever True by a human decision at H3
 
 
 def summarize_run(evidence, attempt):
@@ -205,3 +209,106 @@ def run_correction_loop(
         runs.append(next_run)
 
     return report(runs, fixes, "passed" if runs[-1].passed else "failed")
+
+
+def revision_instructions(base_instructions, branch, feedback, last_run, tests_may_change, test_files):
+    """The human's H3 feedback, plus the latest test evidence, for the Backend Agent."""
+    rule = (
+        "The human ALLOWED changes to test files for this revision."
+        if tests_may_change
+        else "The tests are FROZEN: do not change any file under tests/, including: " + ", ".join(test_files) + "."
+    )
+    evidence = (
+        f"Latest test command: {last_run.command}\nExit code: {last_run.exit_code}\n"
+        f"End of the test output:\n{last_run.output_tail}"
+        if last_run else "No test run is available."
+    )
+    return (
+        f"{base_instructions}\n\n"
+        "REVISION REQUEST FROM THE HUMAN REVIEWER (H3)\n"
+        f"Your work is committed on branch {branch}. The human chose 'revise' with this feedback:\n"
+        f"{feedback}\n\n{evidence}\n\n{rule}\n"
+        "Change only what the feedback asks for. The existing files in the project context "
+        "are the current state of the branch."
+    )
+
+
+def run_revision(
+    *,
+    orchestrator,
+    task,
+    architecture,
+    pilot_root,
+    branch,
+    feedback,
+    tests_may_change,
+    tests_generated,
+    last_run,
+    backend_agent,
+    git_agent,
+    build_project_context,
+    save_proposal,
+    prepare_environment,
+    run_tests=run_task_tests,
+):
+    """One revision after an H3 "revise": the agent changes, commits, and re-tests."""
+
+    task_id = task["task_id"]
+    tests_run = [path for path in tests_generated if (pilot_root / path).is_file()]
+    environment, runs, fixes = [], [], []
+
+    def report(final_result):
+        return CorrectionLoopReport(
+            task_id=task_id, branch=branch, tests_generated=tests_generated, tests_run=tests_run,
+            environment=environment, runs=runs, fix_attempts=fixes, final_result=final_result,
+            decision="ready_for_review" if final_result == "passed" else "needs_revision",
+            trigger="h3_revise", human_feedback=feedback, tests_may_change=tests_may_change,
+        )
+
+    work_package = orchestrator.delegate_task(
+        task, architecture=architecture, project_context=build_project_context(pilot_root)
+    )
+    work_package["instructions"] = revision_instructions(
+        work_package["instructions"], branch, feedback, last_run, tests_may_change, tests_run
+    )
+
+    try:
+        revision = backend_agent.create_patch(work_package)
+    except Exception as error:
+        fixes.append(FixAttempt(attempt=1, outcome="failed", detail=f"No revision proposal: {error}"))
+        return report("failed")
+
+    patch_path, report_path = save_proposal(revision, "revise1_")
+    declared = [item.path for item in revision.changed_files]
+    try:
+        commit = git_agent.commit_fix_on_current_branch(
+            task_id, patch_path, declared, "H3 revision: " + revision.summary.split(". ")[0][:50],
+            record_paths=[patch_path, report_path],
+            frozen_prefixes=() if tests_may_change else FROZEN_PREFIXES,
+        )
+    except FrozenFilesError as error:
+        git_agent.commit_records(task_id, [patch_path, report_path], "Record a rejected revision proposal")
+        fixes.append(FixAttempt(attempt=1, outcome="rejected_frozen_tests", detail=str(error), patch_path=str(patch_path)))
+        return report("failed")
+    except PilotGitError as error:
+        git_agent.commit_records(task_id, [patch_path, report_path], "Record a revision proposal that could not be applied")
+        fixes.append(FixAttempt(attempt=1, outcome="failed", detail=str(error), patch_path=str(patch_path)))
+        return report("failed")
+
+    fixes.append(FixAttempt(attempt=1, outcome="committed", detail=revision.summary,
+                            patch_path=str(patch_path), code_commit=commit.code_commit))
+
+    # The revision may have added or changed tests (if allowed), so look again.
+    tests_run[:] = [path for path in git_agent.files_added_on_branch("tests/") if (pilot_root / path).is_file()]
+    if not tests_run:
+        return report("no_tests")
+
+    check = prepare_environment()
+    environment.append(check)
+    if check.status != "ready":
+        return report("environment_not_ready")
+
+    evidence = run_tests(orchestrator, task, pilot_root, tests_run,
+                         architecture=architecture, python_executable=check.python)
+    runs.append(summarize_run(evidence, 1))
+    return report("passed" if runs[-1].passed else "failed")

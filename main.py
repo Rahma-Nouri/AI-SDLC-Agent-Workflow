@@ -8,6 +8,7 @@ from pathlib import Path
 from agents.agent_contracts import BackendDeveloperResult
 from agents.backend_developer import BackendDeveloperAgent
 from agents.correction_loop import run_correction_loop
+from agents.h3_review import run_h3_review
 from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
 from agents.pilot_environment import PilotEnvironment
@@ -967,6 +968,58 @@ def run_sync_pilot_issues(project_root, orchestrator, github_client=None):
     return result
 
 
+def run_h3_review_command(
+    project_root, orchestrator, git_agent=None, environment=None, backend_agent=None, github_client=None, ask=input
+):
+    """H3: the human reviews the waiting agent branch and decides; the agents act."""
+
+    project_root = Path(project_root)
+    approved = request_fresh_approvals(project_root, orchestrator, next_step="the H3 review")
+    if approved is None:
+        return None
+    snapshot, architecture = approved
+
+    git_agent = git_agent or PilotGitAgent(project_root, workflow_root=Path(__file__).resolve().parent)
+    try:
+        branch = git_agent.current_agent_branch()
+    except PilotGitError as error:
+        print(f"\nNothing to review: {error}")
+        return None
+
+    task_id = branch[len("agent/"):].split("-attempt-")[0]
+    task = next((item for item in snapshot["tasks"] if item.get("task_id") == task_id), None)
+    if task is None:
+        print(f"\nTask {task_id} of branch {branch} is not in the approved backlog.")
+        return None
+
+    if github_client is None:
+        try:
+            github_client = GitHubClient()
+        except Exception as error:
+            print(f"GitHub not available ({error}); the decision still works, without issue comments.")
+
+    outcome = run_h3_review(
+        orchestrator=orchestrator,
+        task=task,
+        architecture=architecture,
+        pilot_root=project_root,
+        git_agent=git_agent,
+        environment=environment or PilotEnvironment(project_root),
+        backend_agent_factory=lambda: backend_agent or BackendDeveloperAgent(),
+        github=github_client,
+        build_project_context=build_pilot_project_context,
+        save_proposal=lambda result, label: save_patch_proposal(
+            result, project_root / "outputs" / "proposed_changes", label
+        ),
+        ask=ask,
+    )
+
+    if outcome.get("decision") == "revise":
+        record_loop_report(project_root, task_id, outcome["revision_report"], git_agent, "h3_revise")
+
+    return outcome
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -983,6 +1036,11 @@ def main(argv=None):
         "--retest-agent-branch",
         action="store_true",
         help="Request fresh H1 and H2, then re-run the tests on the waiting agent branch (no Gemini request).",
+    )
+    parser.add_argument(
+        "--h3-review",
+        action="store_true",
+        help="H3: review the waiting agent branch and approve, revise, or reject it.",
     )
     parser.add_argument(
         "--sync-pilot-issues",
@@ -1022,6 +1080,13 @@ def main(argv=None):
 
     if args.run_t1_tests:
         run_t1_tests(
+            project_root=project_root,
+            orchestrator=orchestrator,
+        )
+        return
+
+    if args.h3_review:
+        run_h3_review_command(
             project_root=project_root,
             orchestrator=orchestrator,
         )

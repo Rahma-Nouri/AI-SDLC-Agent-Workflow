@@ -276,6 +276,53 @@ class PilotGitAgent:
         output = self._git("diff", "--name-only", f"{BASE_BRANCH}...HEAD", "--", prefix).stdout
         return sorted(line.strip() for line in output.splitlines() if line.strip())
 
+    # --- H3 decisions (P1.6) -----------------------------------------------
+
+    def branch_summary(self):
+        """What the human reviews at H3: the agent's commits and changed code files."""
+        branch = self.current_agent_branch()
+        commits = self._git("log", "--format=%h %an: %s", f"{BASE_BRANCH}..HEAD").stdout.strip().splitlines()
+        files = self._git("diff", "--stat", f"{BASE_BRANCH}...HEAD", "--", ".", f":(exclude){RECORDS_PREFIX}").stdout.strip()
+        return {"branch": branch, "commits": commits, "changed_files": files}
+
+    def merge_into_base(self, task_id, branch):
+        """After an H3 approval: merge the agent branch into pilot/main."""
+        if self.current_agent_branch() != branch:
+            raise PilotGitError(f"Expected to be on {branch}.")
+        if self._changed_paths():
+            raise PilotGitError("Commit all records before merging.")
+
+        self._git("switch", BASE_BRANCH)
+        identity = ["-c", f"user.name={AGENT_NAME}", "-c", f"user.email={AGENT_EMAIL}"]
+        merged = self._git(
+            *identity, "merge", "--no-ff", branch,
+            "-m", f"[{task_id}] Merge {branch} after the human's H3 approval",
+            check=False,
+        )
+        if merged.returncode != 0:
+            # Never leave a half-finished merge behind.
+            self._git("merge", "--abort", check=False)
+            self._git("switch", branch, check=False)
+            raise PilotGitError("Merge failed: " + (merged.stderr or merged.stdout).strip())
+
+        self._git("branch", "-d", branch)
+        return self._git("rev-parse", "--short", "HEAD").stdout.strip()
+
+    def push_base(self, remote="origin"):
+        """Push pilot/main (only ever after an H3 approval)."""
+        self._git("push", remote, BASE_BRANCH)
+
+    def delete_agent_branch(self, branch):
+        """After an H3 rejection: go back to pilot/main and delete the attempt."""
+        if not branch.startswith(BRANCH_PREFIX):
+            raise PilotGitError("Only agent/ branches may be deleted.")
+        if self.current_agent_branch() != branch:
+            raise PilotGitError(f"Expected to be on {branch}.")
+        if self._changed_paths():
+            raise PilotGitError("Commit all records before deleting the branch.")
+        self._git("switch", BASE_BRANCH)
+        self._git("branch", "-D", branch)
+
     def commit_records(self, task_id, record_paths, message):
         """Commit run records (reports, proposals) on the current agent branch."""
         self.current_agent_branch()

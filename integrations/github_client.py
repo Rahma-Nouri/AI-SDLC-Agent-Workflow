@@ -314,3 +314,14 @@ class GitHubClient:
         response.raise_for_status()
         print(f"Closed issue #{number} ({state_reason}).")
         return response.json()
+
+    def comment_on_issue(self, number, comment):
+        """Add a comment to an issue (for example the agent's H3 outcome)."""
+        response = requests.post(
+            f"{self.base_url}/issues/{number}/comments",
+            headers=self.headers,
+            json={"body": comment},
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
