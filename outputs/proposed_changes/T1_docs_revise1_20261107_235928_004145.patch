@@ -1,0 +1,26 @@
+--- a/pilot/docs/T1_architecture.md
++++ b/pilot/docs/T1_architecture.md
+@@ -5,10 +5,10 @@
+ This document establishes the foundational system architecture, interface contracts, and persistence models for the AI-Powered Adaptive Exam Preparation System.
+ 
+ It addresses the acceptance criteria for Task T1:
+-- Architecture Decision Records (ADRs) documented for review and formal approval.
+-- Component interaction diagrams and data flow diagrams completed using Mermaid format.
+-- Documentation of OpenAPI contract specifications.
+-- Detailed description of the initial persistence schema implemented for users, uploads (documents), and generated exams.
++- Architecture Decision Records (ADRs) are documented and approved: Addressed (documented in Section 2; awaiting human approval at H3).
++- Component interaction diagrams and data flow diagrams are completed: Addressed (completed in Sections 3 and 4).
++- OpenAPI specifications defining all service contracts are drafted: Not addressed because only 3 initial endpoints (/api/v1/documents, /api/v1/documents/{document_id}, and /api/v1/exams/generate) are drafted in pilot/app/backend/openapi_specs.py, so all service contracts are not yet fully defined.
++- Initial database schema for users, uploads, and exams is created: Addressed (implemented in pilot/app/backend/models.py and pilot/app/backend/database.py, documented in Section 5).
+ 
+ ---
+ 
+@@ -150,7 +150,7 @@
+ While the architecture specification outlines a complete end-to-end modular monolith, the codebase implemented under Task T1 represents the initial schema and contract foundations. The specific differences are:
+ 
+ 1. **Additional Domain Entities Defined in Architecture but Not Yet Implemented in Code**:
+-   - The architecture specifies `ExamBlueprint`, `Question`, `Topic`, `ExamSession`, `ExamAttemptAnswer`, and `LongitudinalMastery` tables.
++   - The architecture specifies `exam_blueprints`, `questions`, `topics`, `exam_sessions`, `exam_answers`, and `longitudinal_mastery` tables.
+    - In the code (`pilot/app/backend/models.py`), only `users`, `documents`, and `generated_exams` are currently implemented.
+ 2. **OpenAPI Specification Scope**:
+    - In `pilot/app/backend/openapi_specs.py`, the OpenAPI specification drafts endpoints for `/api/v1/documents`, `/api/v1/documents/{document_id}`, and `/api/v1/exams/generate`.

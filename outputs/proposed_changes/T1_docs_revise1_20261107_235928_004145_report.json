@@ -1,0 +1,39 @@
+{
+  "task_id": "T1",
+  "summary": "Updated architecture documentation reflecting criterion 3 as not_addressed due to incomplete service contract coverage and standardizing not-yet-implemented entity names to architecture table names.",
+  "patch": "--- a/pilot/docs/T1_architecture.md\n+++ b/pilot/docs/T1_architecture.md\n@@ -5,10 +5,10 @@\n This document establishes the foundational system architecture, interface contracts, and persistence models for the AI-Powered Adaptive Exam Preparation System.\n \n It addresses the acceptance criteria for Task T1:\n-- Architecture Decision Records (ADRs) documented for review and formal approval.\n-- Component interaction diagrams and data flow diagrams completed using Mermaid format.\n-- Documentation of OpenAPI contract specifications.\n-- Detailed description of the initial persistence schema implemented for users, uploads (documents), and generated exams.\n+- Architecture Decision Records (ADRs) are documented and approved: Addressed (documented in Section 2; awaiting human approval at H3).\n+- Component interaction diagrams and data flow diagrams are completed: Addressed (completed in Sections 3 and 4).\n+- OpenAPI specifications defining all service contracts are drafted: Not addressed because only 3 initial endpoints (/api/v1/documents, /api/v1/documents/{document_id}, and /api/v1/exams/generate) are drafted in pilot/app/backend/openapi_specs.py, so all service contracts are not yet fully defined.\n+- Initial database schema for users, uploads, and exams is created: Addressed (implemented in pilot/app/backend/models.py and pilot/app/backend/database.py, documented in Section 5).\n \n ---\n \n@@ -150,7 +150,7 @@\n While the architecture specification outlines a complete end-to-end modular monolith, the codebase implemented under Task T1 represents the initial schema and contract foundations. The specific differences are:\n \n 1. **Additional Domain Entities Defined in Architecture but Not Yet Implemented in Code**:\n-   - The architecture specifies `ExamBlueprint`, `Question`, `Topic`, `ExamSession`, `ExamAttemptAnswer`, and `LongitudinalMastery` tables.\n+   - The architecture specifies `exam_blueprints`, `questions`, `topics`, `exam_sessions`, `exam_answers`, and `longitudinal_mastery` tables.\n    - In the code (`pilot/app/backend/models.py`), only `users`, `documents`, and `generated_exams` are currently implemented.\n 2. **OpenAPI Specification Scope**:\n    - In `pilot/app/backend/openapi_specs.py`, the OpenAPI specification drafts endpoints for `/api/v1/documents`, `/api/v1/documents/{document_id}`, and `/api/v1/exams/generate`.\n",
+  "changed_files": [
+    {
+      "path": "pilot/docs/T1_architecture.md",
+      "purpose": "System Architecture and Interface Design documentation for Task T1"
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "criterion": "Architecture Decision Records (ADRs) are documented and approved.",
+      "status": "addressed",
+      "evidence": "pilot/docs/T1_architecture.md Section 2 documents ADR-001 through ADR-004 with Status 'Proposed - waiting for human approval at H3'."
+    },
+    {
+      "criterion": "Component interaction diagrams and data flow diagrams are completed.",
+      "status": "addressed",
+      "evidence": "pilot/docs/T1_architecture.md Sections 3 and 4 contain completed Mermaid diagrams for component interaction and data flow."
+    },
+    {
+      "criterion": "OpenAPI specifications defining all service contracts are drafted.",
+      "status": "not_addressed",
+      "evidence": "Only 3 endpoints are drafted in pilot/app/backend/openapi_specs.py (/api/v1/documents, /api/v1/documents/{document_id}, /api/v1/exams/generate); full service contracts for remaining modules have not been drafted yet."
+    },
+    {
+      "criterion": "Initial database schema for users, uploads, and exams is created.",
+      "status": "addressed",
+      "evidence": "pilot/app/backend/models.py and pilot/app/backend/database.py create users, documents, and generated_exams tables, documented in pilot/docs/T1_architecture.md Section 5."
+    }
+  ],
+  "tests_added": [],
+  "assumptions": [
+    "Human approval of ADRs will take place at checkpoint H3.",
+    "The remaining service contracts will be drafted incrementally in downstream tasks T2 through T15."
+  ],
+  "unresolved_issues": []
+}
