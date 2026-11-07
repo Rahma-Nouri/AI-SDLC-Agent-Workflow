@@ -2,120 +2,89 @@
 
 ## 1. Project Overview
 
-This project explores how AI agents can support the software development lifecycle (SDLC), from requirements analysis and task planning to software architecture, implementation, testing, and documentation.
+This project investigates how AI agents can support the software development lifecycle (SDLC), from requirements analysis and task planning to architecture, implementation, testing, and documentation.
 
-The goal is to develop a proof of concept (PoC) in which specialized AI agents collaborate through a structured workflow, while human approval checkpoints provide oversight over important decisions.
+It is a proof of concept (PoC): specialized AI agents do the work, and **human approval checkpoints** decide what happens next. The aim is not to build a new tool, but to combine existing models, agent patterns, and developer tools into one project-context-aware workflow, and to **evaluate how good the agents' work is**.
 
-**Project status:** Prototype in development.
+**Status:** prototype in development (Project Lab 1, BME VIK). See `docs/implementation_status.md` for what is implemented and verified today.
 
-## 2. Pilot Project
+## 2. Two Separate Worlds
 
-The workflow is evaluated using a pilot project: an **AI-Powered Adaptive Exam Preparation System**.
+The repository holds two clearly separated parts:
 
-The proposed application will help students prepare for examinations using study materials, practice questions, practice exams, summaries, feedback, and readiness assessment. Future adaptive functionality will personalize preparation based on student performance.
+| | World 1 — the workflow | World 2 — the pilot |
+|---|---|---|
+| What | The agents, the Orchestrator, the approval gates, `main.py`, the workflow tests, the docs | The pilot application: **AI-Powered Adaptive Exam Preparation System** |
+| Built by | The student (human developer) | **Only the AI agents** |
+| Human role | Developer | Decides at the gates only: **approve / revise / reject** ("revise" = written feedback that an agent acts on) |
+| Branch | `main` (+ feature branches) | `pilot/main` (+ agent branches such as `agent/T1-attempt-1`), separate history, never merged into `main` |
+| Folder on disk | `AI-SDLC-Agent-Workflow` | `AI-SDLC-pilot-workspace` (a Git worktree of `pilot/main`, next to the workflow folder) |
 
-The current repository focuses on the AI-supported software development workflow and the generation of the pilot system's specification and technical architecture. It does not yet contain a complete implementation of the exam preparation application.
+The workflow code reads and writes the pilot **only** in the pilot workspace (or in the folder named by the `PILOT_WORKSPACE` environment variable).
 
-## 3. Current Workflow
-
-The current prototype follows these stages:
-
-1. **Requirements analysis:** The Orchestrator Agent analyzes the pilot specification and generates an initial plan.
-2. **Task generation:** The Orchestrator converts the plan into structured development tasks.
-3. **Task quality validation:** The Ticket Quality Checker validates the generated backlog and reports blocking errors and warnings.
-4. **Human approval — H1:** A human reviews and approves, requests revisions to, or rejects the plan and task backlog.
-5. **Architecture generation:** The Software Architect Agent generates a technical architecture based on the specification and approved tasks.
-6. **Human approval — H2:** A human reviews the architecture and can approve, reject, or request manual revisions.
-7. **GitHub synchronization:** After H1 and H2 approval and an additional user confirmation, the workflow creates GitHub Issues for the approved tasks.
-
-If the required approvals are not obtained, the workflow stops before GitHub synchronization.
-
-## 4. Implemented Components
-
-| Component | Responsibility |
-|---|---|
-| `main.py` | Coordinates the current workflow and human approval checkpoints. |
-| `agents/orchestrator.py` | Analyzes requirements, generates and revises plans, converts plans into tasks, validates task structure, manages approval-related state, and prepares task delegation. |
-| `agents/software_architect.py` | Generates a technical architecture from the project specification and task backlog. |
-| `agents/ticket_quality_checker.py` | Checks task quality, including required information, acceptance criteria, task IDs, dependencies, and dependency cycles. |
-| `integrations/github_client.py` | Connects to GitHub, lists issues, and creates task-related issues. |
-| `pilot/pilot_specification.md` | Contains the pilot project's specification. |
-| `pilot/architecture_design.md` | Contains the generated technical architecture document. |
-| `docs/ai_agent_organization.md` | Intended location for documentation of the agent organization; currently empty. |
-
-The Orchestrator and Software Architect are the two currently implemented agent classes. The Ticket Quality Checker is a validation component, not a separate autonomous AI agent.
-
-## 5. Human Approval Checkpoints
-
-The workflow is designed around human oversight.
-
-- **H1 — Plan and task backlog:** Review and approve the development plan and structured tasks before proceeding.
-- **H2 — Software architecture:** Review and approve the generated architecture before GitHub synchronization.
-- **H3 — Implementation and testing:** Planned checkpoint for reviewing implementation results and test evidence.
-- **H4 — Deployment authorization:** Planned checkpoint for authorizing deployment.
-
-H1 and H2 are implemented in the current main workflow. H3 and H4 remain planned and are not yet enforced as complete workflow stages.
-
-## 6. Technology Stack
-
-- **Language:** Python
-- **LLM integration:** Google Gemini through `google-genai`
-- **Configuration:** Environment variables loaded using `python-dotenv`
-- **Task tracking and integration:** GitHub Issues
-- **Testing:** Python test scripts under `tests/`
-
-## 7. Repository Structure
+## 3. How a Task Moves Through the Workflow
 
 ```text
-AI-SDLC-Agent-Workflow/
-├── agents/
-│   ├── orchestrator.py
-│   ├── software_architect.py
-│   └── ticket_quality_checker.py
-├── config/
-├── context/
-├── docs/
-│   └── ai_agent_organization.md
-├── integrations/
-│   └── github_client.py
-├── outputs/
-├── pilot/
-│   ├── pilot_specification.md
-│   └── architecture_design.md
-├── tests/
-├── main.py
-├── requirements.txt
-├── .env                 # Local configuration; not committed
-└── .gitignore
+H1  approve plan + backlog (official snapshot, 17 tasks T1–T17)
+H2  approve architecture (task coverage is validated automatically)
+ │
+ ├─ Backend Developer Agent (Gemini) proposes a change as structured JSON;
+ │  the patch is built locally and checked (paths, Python syntax)
+ ├─ Pilot Git Agent creates agent/<task>-attempt-N in the pilot workspace,
+ │  applies the patch, and commits it as "AI-SDLC Backend Agent"
+ ├─ Pilot Environment: the pilot's own .venv; new packages are installed only
+ │  after the human approves the list
+ ├─ Testing Agent runs the agent's tests; on failure ONE automatic fix
+ │  (tests are frozen), then the tests run again
+ ├─ Automatic checks warn about missing packages and unclosed resources
+ │
+H3  the human reviews commits, files, test evidence and warnings:
+     approve → the agent merges into pilot/main, pushes, comments on the issue
+     revise  → feedback goes to the Backend Agent; one change; tests run again
+     reject  → the agent deletes its branch; pilot/main is unchanged
 ```
 
-## 8. Setup
+Every run record (proposals, reports, test results, H3 decisions) is committed by the agent under `outputs/` on the agent branch, so the evidence stays traceable.
 
-### Prerequisites
+## 4. Commands
 
-- Python compatible with the installed dependencies
-- A Google Gemini API key
-- A GitHub personal access token with appropriate repository permissions
-- Access to the target GitHub repository
+Run from the workflow folder with the virtual environment active:
 
-### Create and activate a virtual environment
+| Command | What it does | Gemini requests |
+|---|---|---|
+| `python main.py --resume-patch` | Fresh H1/H2 on the saved approved context, then: patch → agent branch → environment → tests → (one fix) → report; waits for H3 | 1 (+1 if a fix is needed) |
+| `python main.py --h3-review` | H3 on the waiting agent branch: approve / revise / reject | 0 (revise: 1) |
+| `python main.py --retest-agent-branch` | Re-runs the tests on the waiting agent branch | 0 |
+| `python main.py --sync-pilot-issues` | Fresh H1, then the Issue Sync Agent aligns the pilot's GitHub Issues with the approved backlog (shows its plan first) | 0 |
+| `python main.py --run-t1-tests` | Early T1-only test command (from P1.3) | 0 |
+| `python main.py` | **Legacy full run:** regenerates the plan, backlog and architecture, **overwrites the official snapshot** (new task IDs), writes into the pilot workspace without an agent commit, then offers a patch. Not aligned with the two-worlds design yet; use only on purpose | several |
 
-On Windows PowerShell:
+## 5. Task Management
+
+GitHub Issues with two GitHub Projects boards:
+
+- **Workflow development** — World 1 tasks, label `world: workflow`, created by the student.
+- **Pilot: Exam Preparation System** — World 2 tasks, label `world: pilot`, created and updated by the Issue Sync Agent after H1 approval.
+
+Each board only auto-adds issues with its own label, so the two worlds never mix.
+
+## 6. Setup
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install pytest
 ```
 
-### Install dependencies
+Create the pilot workspace once (next to this folder):
 
 ```powershell
-python -m pip install -r requirements.txt
+git fetch origin
+git worktree add ..\AI-SDLC-pilot-workspace pilot/main
 ```
 
-### Configure environment variables
-
-Create a local `.env` file in the project root:
+Create a local `.env` file (never commit it):
 
 ```dotenv
 GEMINI_API_KEY=your_gemini_api_key
@@ -123,48 +92,32 @@ GITHUB_TOKEN=your_github_token
 GITHUB_REPOSITORY=owner/repository
 ```
 
-Replace the example values with your own credentials and repository identifier. Never commit `.env` or expose API keys and tokens.
-
-## 9. Run the Workflow
-
-With the virtual environment activated and `.env` configured, run:
+## 7. Tests
 
 ```powershell
-python main.py
+python -m pytest -q
 ```
 
-The current workflow uses interactive prompts for human decisions. It may call the Gemini API and create GitHub Issues after the required approvals and final confirmation.
+The default suite works offline (fake Gemini agent, temporary Git repositories). The live Gemini check is opt-in: `RUN_LIVE_GEMINI_TESTS=1`.
 
-**Important:** Running the workflow can create real GitHub Issues. Review the target repository and generated tasks before confirming synchronization.
+## 8. Repository Structure (World 1)
 
-## 10. Tests
-
-The repository contains test scripts for the Orchestrator, Software Architect, Ticket Quality Checker, GitHub integration, and Gemini integration.
-
-Run the test suite with:
-
-```powershell
-python -m pytest
+```text
+AI-SDLC-Agent-Workflow/
+├── agents/            # agents, gates and helpers (see docs/ai_agent_organization.md)
+├── integrations/      # GitHub client
+├── docs/              # agent organization, implementation status, archive
+├── tests/             # offline test suite
+├── main.py            # command-line entry point and gate flow
+└── requirements.txt
 ```
 
-If `pytest` is not installed in the environment, install it separately before running this command. Some integration tests may require credentials, network access, or a configured GitHub repository. Review each test before running it.
+## 9. Documentation
 
-## 11. Current Limitations and Next Steps
+- `docs/ai_agent_organization.md` — agents, responsibilities, gates, diagram.
+- `docs/implementation_status.md` — what is implemented and verified, known gaps.
+- `docs/coding_agent_readiness.md` — historical design notes (October 2026).
 
-The project is a work in progress. Current priorities include:
+## 10. Academic Context
 
-- Preserve exact task IDs in generated architecture documents.
-- Add automated validation to ensure architecture coverage of all expected tasks.
-- Complete documentation of the agent organization, workflow, and project context.
-- Improve the integration between task validation and workflow orchestration where needed.
-- Implement specialist agents for software development, testing, and documentation.
-- Extend automated execution, result verification, and human approval stages.
-- Evaluate the workflow using the pilot project.
-
-Planned functionality should not be interpreted as already implemented.
-
-## 12. Academic Context
-
-This project is developed as part of **Project Lab 1** at Budapest University of Technology and Economics (BME), Faculty of Electrical Engineering and Informatics.
-
-The work investigates a practical approach to AI-supported software engineering using specialized agents, structured tasks, GitHub integration, and human approval checkpoints.
+Developed as part of **Project Lab 1** at the Budapest University of Technology and Economics (BME), Faculty of Electrical Engineering and Informatics. Supervisor: Pálfy Miklós Gábor. Industry partner: IRF Solutions Kft.

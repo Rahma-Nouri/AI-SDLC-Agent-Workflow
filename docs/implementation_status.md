@@ -1,166 +1,69 @@
 # Implementation Status
 
+*Updated 7 November 2026 (end of phase P1). "Verified" means: covered by the offline test suite **and** seen working in a real run, unless marked otherwise.*
+
 ## Project
 
-**Name:** AI-Supported End-to-End Software Development Workflow
+- **Name:** AI-Supported End-to-End Software Development Workflow
+- **Pilot:** AI-Powered Adaptive Exam Preparation System
+- **Repository:** `Rahma-Nouri/AI-SDLC-Agent-Workflow` — World 1 on `main`, World 2 on `pilot/main`
 
-**Pilot:** AI-Powered Adaptive Exam Preparation System
+## 1. Test Baseline
 
-**Repository:** `Rahma-Nouri/AI-SDLC-Agent-Workflow`
+| Date | Command | Result |
+|---|---|---|
+| 29 Oct 2026 | `python -m pytest -q` | 63 passed, 1 skipped |
+| 2 Nov 2026 (after P1.8, `434002f`) | `python -m pytest -q` | **120 passed, 1 skipped** |
 
-**Purpose:** Build a proof of concept in which context-aware AI agents support the software development lifecycle, from requirements and task planning through architecture, implementation, testing, and documentation.
+The skipped test is the opt-in live Gemini check (`RUN_LIVE_GEMINI_TESTS=1`). All other tests run offline, using a fake Gemini agent and temporary Git repositories.
 
-## 1. Current Workflow
+## 2. Official Backlog Decision (29 Oct 2026)
 
-The current workflow is designed to:
+The approved snapshot `outputs/approved_context/current_approved_context.json` (17 tasks, T1–T17) is the source of truth. Task IDs are frozen after H1 approval. The pilot's GitHub Issues are now created from this snapshot by the Issue Sync Agent (N3.4); the 39 older generated issues were closed as "not planned".
 
-1. Analyze the pilot specification.
-2. Generate a task backlog.
-3. Obtain H1 backlog approval.
-4. Generate an architecture proposal.
-5. Validate architecture coverage against the approved tasks.
-6. Obtain H2 architecture approval.
-7. Require explicit confirmation before GitHub issue synchronization.
+## 3. Implemented Components (by step)
 
-Coding-agent implementation and later approval gates remain future work unless separately verified in the current codebase.
+| Step | Commit | What was added |
+|---|---|---|
+| Base | `4b97037`, `153f8aa`, `7b55ed8` | Orchestrator, H1, Software Architect, H2 with coverage validation, Backend Developer Agent (structured JSON, local patch building, path and syntax checks), Testing Agent, agent contracts |
+| P1.1 | `f35d9ea` | Patch files written with LF line endings |
+| P1.3 | `589f0e9` | `--run-t1-tests`: runs and saves the T1 test evidence |
+| N2 | `26869c7`, `65d1765` | Two worlds on disk: the workflow uses the pilot only in its own workspace (`pilot/main` worktree); pilot files removed from `main` |
+| N3.4 | `ffc21c4` | Issue Sync Agent and `--sync-pilot-issues` (GitHub Issues + two Projects boards) |
+| P1.4 | `65aaef5` | Pilot Git Agent: own agent branch, agent commit identity |
+| P1.5 | `6d9e07f` | Correction loop: tests → one automatic fix (tests frozen) → tests |
+| P1.5b | `5ff1027` | Git and test output read as UTF-8 (Hungarian folder names); run records under `outputs/` kept and committed as evidence |
+| P1.5c | `71e4eb1` | Pilot's own `.venv` with human-approved packages; `--retest-agent-branch` |
+| P1.6 | `0eeecae` | H3 gate: approve (merge + push + issue comment) / revise (feedback → agent) / reject (branch deleted) |
+| P1.8 | `434002f` | Automatic checks on the agent's code (imports vs requirements, unclosed resources), shown at H3 |
+| P1.9 | this change | README and documentation updated to the current state |
 
-## Official Backlog Decision (29 Oct 2026)
+## 4. Real-Run Evidence
 
-For the prototype, the approved snapshot
-`outputs/approved_context/current_approved_context.json` (17 tasks, T1–T17)
-is the source of truth. Task IDs are frozen after H1 approval.
-GitHub Issues #24–#39 (16 issues) are out of date and will be re-synced
-later on purpose, not during testing.
+The full chain ran for real on pilot task **T1** (database layer):
 
-Test baseline (29 Oct 2026): `python -m pytest -q` → 63 passed, 1 skipped.
+H1 → H2 → Backend Developer Agent (Gemini) → Pilot Git Agent (branch `agent/T1-attempt-1`) → package approval → tests → automatic fix → H3 revise (Windows file-lock bug, failure case #18, fixed by the agent from the human's written feedback) → H3 approve → merge into `pilot/main` at **`094028e`** (agent author) → push → comment on the T1 issue.
 
+The human wrote no pilot code. Every agent action and every decision is committed under `outputs/` in the pilot history.
 
-## 2. Implemented and Verified Components
+Failure cases #11–#18 found during these runs, and a comparison of the manual and agent-built T1, are recorded in the development notes.
 
-The following capabilities have been implemented in the project and were previously tested. Re-run the tests after code changes to confirm they still pass.
+## 5. Known Gaps
 
-### Orchestrator
-- Coordinates specification analysis and task generation.
-- Supports a human approval step for the generated backlog.
-- Initiates architecture generation after backlog approval.
-- Integrates with the workflow's GitHub issue creation path.
+| Gap | Effect | Planned |
+|---|---|---|
+| H2 "revise" asks the human to edit the architecture file by hand | Breaks the rule that the human only decides in the pilot | Send the feedback to the Architect agent |
+| Legacy full run (`python main.py` without a flag) | Regenerates the backlog, overwrites the official snapshot, writes into the pilot without an agent commit | Align with the two-worlds design or remove |
+| `pytest` is missing from `requirements.txt` | Needs a separate install (see README) | Small fix |
+| Ticket Quality Checker not connected to the main flow | Task quality is not checked automatically | Later |
+| T1 acceptance criteria not fully met (e.g. OpenAPI claim overstated, failure case #17) | Issue #47 stays open | Next T1 attempt or follow-up task |
+| Pilot issues are created with the student's GitHub token | Issues show the student as the GitHub author (the text names the agent) | Possible bot account / GitHub App |
+| Automatic checks are heuristics | Can miss problems or warn without reason | Accepted for the PoC |
+| Gemini free tier: 20 requests/day; occasional 503 errors | Limits how many runs fit in a day | Accepted for the PoC |
 
-### Software Architect
-- Generates an architecture proposal from the approved tasks.
-- Produces an architecture document for the pilot.
+## 6. Next Steps (P2)
 
-### GitHub integration
-- A GitHub issue creation integration exists.
-- A previous test successfully created a test issue.
-- Issue synchronization must remain behind the required approvals and explicit user confirmation.
-
-### Validation and tests
-- Architecture coverage validation and Orchestrator validation tests exist.
-- The previous test baseline was 9 passing tests.
-- The test suite must be run again after the latest task-ID validation changes; the earlier result does not prove the new version passes.
-
-### Human approval
-- H1 backlog approval and H2 architecture review are part of the current workflow.
-- The architecture review path is intended to revalidate the current architecture file before acceptance.
-- Regression testing is still required to verify all failure and edit scenarios.
-
-## 3. Current Task-ID Validation Issue
-
-### Observed behavior
-
-During a recent end-to-end run:
-
-1. The Orchestrator generated 12 tasks with IDs `T1` through `T12`.
-2. H1 backlog approval was completed.
-3. The Software Architect generated an architecture draft.
-4. Architecture coverage validation reported the generated tasks as missing.
-5. The validator was only matching the `TASK-\\d+` pattern and did not recognize `T1`, `T2`, and similar IDs.
-6. The workflow's save-order safeguard prevented the invalid draft from overwriting the existing `pilot/architecture_design.md`.
-7. The workflow stopped before H2 approval and GitHub issue creation.
-
-### Intended fix
-
-Update task ID validation so it supports the actual task ID formats used by the workflow, including `T1`/`T12` and `TASK-01`-style IDs.
-
-The validator must preserve the exact spelling of each ID and check that the architecture covers every approved task.
-
-### Current status
-
-**In progress — fix and regression tests must be confirmed.**
-
-Do not consider architecture validation successful until the updated implementation passes its tests and a new workflow run verifies the coverage report.
-
-The temporary Gemini API 503 errors observed during generation are external service errors. They should be tracked separately from the task-ID validation bug.
-
-## 4. Safety Requirements
-
-The workflow must preserve these rules:
-
-- Invalid task data must not proceed as an approved backlog.
-- H1 must precede architecture generation.
-- Invalid architecture must not replace a known-good architecture document.
-- H2 must validate the current architecture, including user edits.
-- Rejection or failed validation must stop downstream processing.
-- GitHub synchronization must not occur before the required approvals and explicit confirmation.
-- Future coding agents must work from approved tasks and architecture.
-
-## 5. Next Steps
-
-### Step 1 — Finish task-ID validation
-- [ ] Run `python -m py_compile agents/software_architect.py main.py`.
-- [ ] Run the existing test suite.
-- [ ] Resolve any failures introduced by the validator update.
-- [ ] Confirm both `T1`/`T12` and `TASK-01`-style IDs are supported.
-
-### Step 2 — Add regression tests
-- [ ] Test valid task IDs.
-- [ ] Test duplicate and malformed task IDs.
-- [ ] Test missing architecture coverage.
-- [ ] Test architecture references to unknown task IDs where applicable.
-- [ ] Test that an invalid architecture draft does not overwrite a known-good architecture file.
-- [ ] Test that H2 revalidates the current architecture after edits.
-
-### Step 3 — Verify the workflow
-- [ ] Run the workflow from backlog generation through architecture validation.
-- [ ] Confirm that the coverage report identifies every approved task correctly.
-- [ ] Review and approve the architecture at H2 only after validation succeeds.
-- [ ] Avoid unintentionally creating duplicate GitHub issues during repeated test runs.
-
-### Step 4 — Stabilize the agent interfaces
-- [ ] Confirm the canonical approved-task artifact and where it is stored.
-- [ ] Ensure the Architect and validator receive the same approved task list.
-- [ ] Document the input/output contracts for the Orchestrator and Software Architect.
-- [ ] Keep the workflow's failure and approval boundaries explicit.
-
-### Step 5 — Begin coding-agent implementation
-- [ ] Select one approved task from the pilot backlog.
-- [ ] Provide the coding agent with the task, acceptance criteria, dependencies, architecture, and relevant files.
-- [ ] Require a summary of changes, changed files, test results, and unresolved issues.
-- [ ] Verify the implementation manually and through tests.
-- [ ] Add the Testing Agent and H3 review path before expanding the number of coding agents.
-
-## 6. Planned Components
-
-The following components are part of the intended architecture but should not be described as implemented until verified:
-
-- Backend Developer Agent.
-- Frontend Developer Agent.
-- Testing Agent with test execution and evidence reporting.
-- Documentation Agent.
-- Ticket Quality Checker.
-- Additional approval gates for implementation and final verification.
-
-The first coding-agent milestone should demonstrate one task end to end, not all planned agents simultaneously.
-
-## 7. Current Definition of Done
-
-The project is ready to begin the first coding-agent implementation when:
-
-1. Task ID and architecture coverage validation pass automated tests.
-2. The workflow correctly handles H1 and H2 approvals.
-3. Invalid architecture cannot overwrite a known-good file.
-4. Rejection and validation failure stop downstream actions.
-5. The approved task backlog is consistently passed through the workflow.
-6. The first coding agent has a defined input/output contract.
-
-The project is ready to expand beyond the first coding-agent path when implementation changes, test execution, evidence reporting, and human review work reliably together.
+- Run further pilot tasks through the same chain and collect the evaluation data.
+- Frontend Developer Agent (after the UI stack is decided) and Documentation Agent.
+- Fix the H2 revise gap and the legacy full run.
+- Evaluation of the agents' work quality for the thesis.
