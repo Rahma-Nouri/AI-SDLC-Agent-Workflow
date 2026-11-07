@@ -1,0 +1,24 @@
+{
+  "gate": "H3",
+  "task_id": "T1",
+  "branch": "agent/T1-docs-attempt-1",
+  "decision": "revise",
+  "decided_at": "2026-11-07T23:57:46",
+  "latest_tests": "not_applicable (document)",
+  "agent_commits": [
+    "dc54ee3 AI-SDLC Documentation Agent: [T1] Record the patch proposal and report",
+    "6ebeb9a AI-SDLC Documentation Agent: [T1] Technical architecture documentation for Task T1 including ADRs, comp..."
+  ],
+  "documents": [
+    "pilot/docs/T1_architecture.md"
+  ],
+  "document_checks": [
+    "pilot/docs/T1_architecture.md:129 - `users.id` does not exist in the pilot workspace",
+    "pilot/docs/T1_architecture.md:139 - `users.id` does not exist in the pilot workspace",
+    "pilot/docs/T1_architecture.md:153 - `ExamBlueprint`: ExamBlueprint is not found in the pilot's Python code",
+    "pilot/docs/T1_architecture.md:153 - `ExamSession`: ExamSession is not found in the pilot's Python code",
+    "pilot/docs/T1_architecture.md:153 - `ExamAttemptAnswer`: ExamAttemptAnswer is not found in the pilot's Python code",
+    "pilot/docs/T1_architecture.md:153 - `LongitudinalMastery`: LongitudinalMastery is not found in the pilot's Python code"
+  ],
+  "notes": "Set criterion 3 (OpenAPI for all service contracts) to not_addressed, because only 3 endpoints are drafted, and say so in section 1. Replace ExamAttemptAnswer with the architecture's real table name exam_answers, and name the other not-yet-implemented entities by their architecture table names (exam_blueprints, exam_sessions, longitudinal_mastery, questions, topics if present). Keep everything else unchanged."
+}
