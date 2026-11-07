@@ -1,0 +1,41 @@
+--- a/tests/test_backend_database.py
++++ b/tests/test_backend_database.py
+@@ -12,29 +12,32 @@
+         self.temp_dir = tempfile.TemporaryDirectory()
+         self.db_path = Path(self.temp_dir.name) / "test_pilot.db"
+         self.db_url = f"sqlite:///{self.db_path.resolve()}"
++        self.engine = None
+ 
+     def tearDown(self):
++        if self.engine is not None and hasattr(self.engine, "dispose"):
++            self.engine.dispose()
+         self.temp_dir.cleanup()
+ 
+     def test_tables_not_created_on_engine_creation(self):
+-        engine = get_engine(self.db_url)
+-        inspector = inspect(engine)
++        self.engine = get_engine(self.db_url)
++        inspector = inspect(self.engine)
+         table_names = inspector.get_table_names()
+         self.assertNotIn("users", table_names)
+         self.assertNotIn("documents", table_names)
+         self.assertNotIn("generated_exams", table_names)
+ 
+     def test_database_initialization_creates_schema_and_records(self):
+-        engine = get_engine(self.db_url)
+-        init_db(engine)
++        self.engine = get_engine(self.db_url)
++        init_db(self.engine)
+ 
+-        inspector = inspect(engine)
++        inspector = inspect(self.engine)
+         tables = inspector.get_table_names()
+         self.assertIn("users", tables)
+         self.assertIn("documents", tables)
+         self.assertIn("generated_exams", tables)
+ 
+-        session_maker = get_session_factory(engine)
++        session_maker = get_session_factory(self.engine)
+         with session_maker() as session:
+             user = User(email="student@example.com")
+             session.add(user)
