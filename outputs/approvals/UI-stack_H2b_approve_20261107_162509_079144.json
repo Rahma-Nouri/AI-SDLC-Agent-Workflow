@@ -1,0 +1,32 @@
+{
+  "gate": "H2b",
+  "decision": "approve",
+  "decided_at": "2026-11-07T16:25:09",
+  "proposal": {
+    "framework": "React",
+    "language": "TypeScript",
+    "build_tool": "Vite",
+    "test_runner": "Vitest",
+    "package_manager": "npm",
+    "frontend_folder": "pilot/app/frontend",
+    "reasons": {
+      "framework": "React provides an extensive ecosystem of reactive state management and UI components, making it well-suited for building the dynamic exam execution interface and readiness dashboards specified in the architecture.",
+      "language": "TypeScript guarantees static type safety when interacting with structured backend schemas such as question taxonomies, evaluation responses, and diagnostic reports, preventing runtime errors.",
+      "build_tool": "Vite provides lightning-fast cold server start times, optimized Hot Module Replacement during development, and streamlined production builds with zero complex configuration.",
+      "test_runner": "Vitest integrates natively with Vite and executes fast, headless component and unit tests directly from the command line without opening browser windows or needing manual intervention.",
+      "package_manager": "npm is bundled natively with Node.js, eliminating prerequisites and offering a universally supported dependency management environment for CI and automated agents.",
+      "frontend_folder": "Locating the UI under pilot/app/frontend aligns with the modular monolith layout by cleanly separating the SPA presentation layer from the Python backend service code."
+    },
+    "alternatives_considered": [
+      "Vue.js 3 with Pinia as an alternative frontend framework",
+      "Jest as an alternative test runner instead of Vitest",
+      "Vanilla JavaScript instead of TypeScript for lower initial type-declaration overhead",
+      "pnpm or Yarn as alternative package managers instead of npm"
+    ],
+    "risks": [
+      "Strict TypeScript definitions might require frequent synchronization updates as backend REST schemas evolve across rapid prototype iterations.",
+      "State synchronization issues between browser local storage caching and backend session submission during interactive test taking could cause edge-case data loss if network dropouts occur."
+    ]
+  },
+  "feedback": ""
+}

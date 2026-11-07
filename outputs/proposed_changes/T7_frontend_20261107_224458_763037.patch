@@ -1,0 +1,512 @@
+--- a/.gitignore
++++ b/.gitignore
+@@ -3,3 +3,5 @@
+ *.db
+ .venv/
+ .env
++node_modules/
++dist/
+--- /dev/null
++++ b/pilot/app/frontend/package.json
+@@ -0,0 +1,27 @@
++{
++  "name": "practice-exam-frontend",
++  "private": true,
++  "version": "0.1.0",
++  "type": "module",
++  "scripts": {
++    "dev": "vite",
++    "build": "tsc && vite build",
++    "preview": "vite preview",
++    "test": "vitest run"
++  },
++  "dependencies": {
++    "react": "^18.2.0",
++    "react-dom": "^18.2.0"
++  },
++  "devDependencies": {
++    "@testing-library/jest-dom": "^5.17.0",
++    "@testing-library/react": "^14.2.1",
++    "@types/react": "^18.2.66",
++    "@types/react-dom": "^18.2.22",
++    "@vitejs/plugin-react": "^4.2.1",
++    "jsdom": "^24.0.0",
++    "typescript": "^5.2.2",
++    "vite": "^5.1.4",
++    "vitest": "^1.3.1"
++  }
++}
+--- /dev/null
++++ b/pilot/app/frontend/tsconfig.json
+@@ -0,0 +1,20 @@
++{
++  "compilerOptions": {
++    "target": "ES2020",
++    "useDefineForClassFields": true,
++    "lib": ["ES2020", "DOM", "DOM.Iterable"],
++    "module": "ESNext",
++    "skipLibCheck": true,
++    "moduleResolution": "bundler",
++    "allowImportingTsExtensions": true,
++    "resolveJsonModule": true,
++    "isolatedModules": true,
++    "noEmit": true,
++    "jsx": "react-jsx",
++    "strict": true,
++    "noUnusedLocals": true,
++    "noUnusedParameters": true,
++    "noFallthroughCasesInSwitch": true
++  },
++  "include": ["src"]
++}
+--- /dev/null
++++ b/pilot/app/frontend/vite.config.ts
+@@ -0,0 +1,12 @@
++/// <reference types="vitest" />
++import { defineConfig } from 'vite';
++import react from '@vitejs/plugin-react';
++
++export default defineConfig({
++  plugins: [react()],
++  test: {
++    globals: true,
++    environment: 'jsdom',
++    setupFiles: './src/test/setup.ts'
++  }
++});
+--- /dev/null
++++ b/pilot/app/frontend/index.html
+@@ -0,0 +1,12 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <title>Practice Exam</title>
++  </head>
++  <body>
++    <div id="root"></div>
++    <script type="module" src="/src/main.tsx"></script>
++  </body>
++</html>
+--- /dev/null
++++ b/pilot/app/frontend/src/test/setup.ts
+@@ -0,0 +1,6 @@
++import '@testing-library/jest-dom';
++import { beforeEach } from 'vitest';
++
++beforeEach(() => {
++  localStorage.clear();
++});
+--- /dev/null
++++ b/pilot/app/frontend/src/types/exam.ts
+@@ -0,0 +1,40 @@
++export type QuestionType = 'MULTIPLE_CHOICE' | 'SHORT_ANSWER';
++
++export interface ExamQuestion {
++  question_id: string;
++  sequence_order: number;
++  question_type: QuestionType;
++  prompt: string;
++  options: string[] | null;
++  points: number;
++}
++
++export interface ExamDetails {
++  exam_id: string;
++  title: string;
++  total_questions: number;
++  questions: ExamQuestion[];
++}
++
++export interface SessionStartResponse {
++  session_id: string;
++  started_at: string;
++}
++
++export interface AnswerSubmissionItem {
++  question_id: string;
++  student_answer: string;
++}
++
++export interface SaveAnswersPayload {
++  answers: AnswerSubmissionItem[];
++}
++
++export interface SaveAnswersResponse {
++  status: string;
++  last_saved_at: string;
++}
++
++export interface SubmitExamResponse {
++  job_id: string;
++}
+--- /dev/null
++++ b/pilot/app/frontend/src/services/mockApi.ts
+@@ -0,0 +1,64 @@
++import { ExamDetails, SessionStartResponse, SaveAnswersPayload, SaveAnswersResponse, SubmitExamResponse } from '../types/exam';
++
++const sampleExam: ExamDetails = {
++  exam_id: 'exam_77d8e9f',
++  title: 'Practice Midterm 1: Computer Systems',
++  total_questions: 2,
++  questions: [
++    {
++      question_id: 'q_1',
++      sequence_order: 1,
++      question_type: 'MULTIPLE_CHOICE',
++      prompt: 'What is the primary function of the Program Counter register?',
++      options: [
++        'Holds current instruction',
++        'Holds address of next instruction',
++        'Stores ALU flags',
++        'Buffers I/O data'
++      ],
++      points: 5
++    },
++    {
++      question_id: 'q_2',
++      sequence_order: 2,
++      question_type: 'SHORT_ANSWER',
++      prompt: 'Explain the difference between spatial and temporal locality.',
++      options: null,
++      points: 10
++    }
++  ]
++};
++
++export const mockApi = {
++  async getExam(examId: string): Promise<ExamDetails> {
++    return new Promise((resolve) => {
++      setTimeout(() => resolve(sampleExam), 50);
++    });
++  },
++
++  async startSession(examId: string): Promise<SessionStartResponse> {
++    return new Promise((resolve) => {
++      setTimeout(() => resolve({
++        session_id: 'sess_102938',
++        started_at: new Date().toISOString()
++      }), 50);
++    });
++  },
++
++  async saveAnswers(sessionId: string, payload: SaveAnswersPayload): Promise<SaveAnswersResponse> {
++    return new Promise((resolve) => {
++      setTimeout(() => resolve({
++        status: 'SAVED',
++        last_saved_at: new Date().toISOString()
++      }), 50);
++    });
++  },
++
++  async submitExam(sessionId: string): Promise<SubmitExamResponse> {
++    return new Promise((resolve) => {
++      setTimeout(() => resolve({
++        job_id: 'job_eval_4455'
++      }), 50);
++    });
++  }
++};
+--- /dev/null
++++ b/pilot/app/frontend/src/components/PracticeExamView.tsx
+@@ -0,0 +1,201 @@
++import React, { useEffect, useState } from 'react';
++import { ExamDetails, QuestionType } from '../types/exam';
++import { mockApi } from '../services/mockApi';
++
++interface PracticeExamViewProps {
++  examId: string;
++}
++
++const ADVISORY_TEXT = "AI feedback is advisory. Review model answers for authoritative validation.";
++
++export const PracticeExamView: React.FC<PracticeExamViewProps> = ({ examId }) => {
++  const [exam, setExam] = useState<ExamDetails | null>(null);
++  const [sessionId, setSessionId] = useState<string | null>(null);
++  const [currentIndex, setCurrentIndex] = useState<number>(0);
++  const [answers, setAnswers] = useState<Record<string, string>>({});
++  const [saveStatus, setSaveStatus] = useState<string>('');
++  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
++  const [submittedJobId, setSubmittedJobId] = useState<string | null>(null);
++  const [loading, setLoading] = useState<boolean>(true);
++  const [error, setError] = useState<string | null>(null);
++
++  const storageKey = `exam_answers_${examId}`;
++
++  useEffect(() => {
++    const initializeExam = async () => {
++      try {
++        setLoading(true);
++        const examData = await mockApi.getExam(examId);
++        setExam(examData);
++
++        const session = await mockApi.startSession(examId);
++        setSessionId(session.session_id);
++
++        const cachedAnswers = localStorage.getItem(storageKey);
++        if (cachedAnswers) {
++          try {
++            setAnswers(JSON.parse(cachedAnswers));
++          } catch (e) {
++            console.error('Failed to parse cached answers', e);
++          }
++        }
++      } catch (err) {
++        setError('Failed to initialize exam session.');
++      } finally {
++        setLoading(false);
++      }
++    };
++
++    initializeExam();
++  }, [examId, storageKey]);
++
++  const handleAnswerChange = (questionId: string, value: string) => {
++    const updated = { ...answers, [questionId]: value };
++    setAnswers(updated);
++    localStorage.setItem(storageKey, JSON.stringify(updated));
++  };
++
++  const handleSaveProgress = async () => {
++    if (!sessionId) return;
++    try {
++      setSaveStatus('Saving...');
++      const payload = {
++        answers: Object.entries(answers).map(([question_id, student_answer]) => ({
++          question_id,
++          student_answer
++        }))
++      };
++      const res = await mockApi.saveAnswers(sessionId, payload);
++      setSaveStatus(`Saved at ${new Date(res.last_saved_at).toLocaleTimeString()}`);
++    } catch (err) {
++      setSaveStatus('Failed to save progress.');
++    }
++  };
++
++  const handleSubmit = async () => {
++    if (!sessionId) return;
++    try {
++      setIsSubmitting(true);
++      await handleSaveProgress();
++      const result = await mockApi.submitExam(sessionId);
++      setSubmittedJobId(result.job_id);
++      localStorage.removeItem(storageKey);
++    } catch (err) {
++      setError('Submission failed. Please retry.');
++    } finally {
++      setIsSubmitting(false);
++    }
++  };
++
++  if (loading) return <div>Loading exam session...</div>;
++  if (error) return <div role="alert">{error}</div>;
++  if (!exam) return <div>Exam not found.</div>;
++
++  if (submittedJobId) {
++    return (
++      <section aria-label="Submission Confirmation">
++        <h2>Exam Submitted Successfully</h2>
++        <p>Your submission job ID: <strong>{submittedJobId}</strong></p>
++        <p className="advisory-notice">{ADVISORY_TEXT}</p>
++      </section>
++    );
++  }
++
++  const currentQuestion = exam.questions[currentIndex];
++  const isLastQuestion = currentIndex === exam.questions.length - 1;
++
++  return (
++    <div className="exam-container" style={{ maxWidth: '800px', margin: '0 auto', padding: '1rem' }}>
++      <header>
++        <h1>{exam.title}</h1>
++        <p className="advisory-notice" style={{ color: '#666', fontStyle: 'italic', marginBottom: '1rem' }}>
++          {ADVISORY_TEXT}
++        </p>
++        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
++          <span>Question {currentIndex + 1} of {exam.total_questions}</span>
++          <span>Session: {sessionId}</span>
++        </div>
++      </header>
++
++      <main>
++        {currentQuestion && (
++          <div key={currentQuestion.question_id} style={{ border: '1px solid #ccc', padding: '1.5rem', borderRadius: '8px' }}>
++            <h3>{currentQuestion.prompt} ({currentQuestion.points} points)</h3>
++
++            {currentQuestion.question_type === 'MULTIPLE_CHOICE' && currentQuestion.options && (
++              <fieldset style={{ border: 'none', padding: 0 }}>
++                <legend className="sr-only">Options</legend>
++                {currentQuestion.options.map((option, idx) => (
++                  <div key={idx} style={{ marginBottom: '0.5rem' }}>
++                    <label>
++                      <input
++                        type="radio"
++                        name={`question_${currentQuestion.question_id}`}
++                        value={option}
++                        checked={answers[currentQuestion.question_id] === option}
++                        onChange={(e) => handleAnswerChange(currentQuestion.question_id, e.target.value)}
++                      />
++                      {' '}{option}
++                    </label>
++                  </div>
++                ))}
++              </fieldset>
++            )}
++
++            {currentQuestion.question_type === 'SHORT_ANSWER' && (
++              <div style={{ marginTop: '1rem' }}>
++                <label htmlFor={`answer_${currentQuestion.question_id}`}>Your Answer:</label>
++                <textarea
++                  id={`answer_${currentQuestion.question_id}`}
++                  rows={5}
++                  style={{ width: '100%', marginTop: '0.5rem' }}
++                  value={answers[currentQuestion.question_id] || ''}
++                  onChange={(e) => handleAnswerChange(currentQuestion.question_id, e.target.value)}
++                  placeholder="Type your answer here..."
++                />
++              </div>
++            )}
++          </div>
++        )}
++
++        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1.5rem' }}>
++          <div>
++            <button
++              type="button"
++              onClick={() => setCurrentIndex((prev) => Math.max(prev - 1, 0))}
++              disabled={currentIndex === 0}
++            >
++              Previous
++            </button>
++            <button
++              type="button"
++              onClick={() => setCurrentIndex((prev) => Math.min(prev + 1, exam.questions.length - 1))}
++              disabled={isLastQuestion}
++              style={{ marginLeft: '0.5rem' }}
++            >
++              Next
++            </button>
++          </div>
++
++          <div>
++            <button type="button" onClick={handleSaveProgress} style={{ marginRight: '0.5rem' }}>
++              Save Progress
++            </button>
++            {isLastQuestion ? (
++              <button
++                type="button"
++                onClick={handleSubmit}
++                disabled={isSubmitting}
++                style={{ backgroundColor: '#0066cc', color: 'white', fontWeight: 'bold' }}
++              >
++                {isSubmitting ? 'Submitting...' : 'Submit Exam'}
++              </button>
++            ) : null}
++          </div>
++        </div>
++
++        {saveStatus && <p aria-live="polite" style={{ marginTop: '0.5rem', color: '#2d6a4f' }}>{saveStatus}</p>}
++      </main>
++    </div>
++  );
++};
+--- /dev/null
++++ b/pilot/app/frontend/src/App.tsx
+@@ -0,0 +1,12 @@
++import React from 'react';
++import { PracticeExamView } from './components/PracticeExamView';
++
++export const App: React.FC = () => {
++  return (
++    <div className="app-root">
++      <PracticeExamView examId="exam_77d8e9f" />
++    </div>
++  );
++};
++
++export default App;
+--- /dev/null
++++ b/pilot/app/frontend/src/main.tsx
+@@ -0,0 +1,9 @@
++import React from 'react';
++import ReactDOM from 'react-dom/client';
++import App from './App';
++
++ReactDOM.createRoot(document.getElementById('root')!).render(
++  <React.StrictMode>
++    <App />
++  </React.StrictMode>
++);
+--- /dev/null
++++ b/pilot/app/frontend/src/components/PracticeExamView.test.tsx
+@@ -0,0 +1,68 @@
++import { render, screen, fireEvent, waitFor } from '@testing-library/react';
++import { describe, it, expect, beforeEach } from 'vitest';
++import React from 'react';
++import { PracticeExamView } from './PracticeExamView';
++
++describe('PracticeExamView', () => {
++  const examId = 'exam_77d8e9f';
++
++  beforeEach(() => {
++    localStorage.clear();
++  });
++
++  it('renders exam questions and required advisory disclaimer', async () => {
++    render(<PracticeExamView examId={examId} />);
++
++    expect(await screen.findByText('Practice Midterm 1: Computer Systems')).toBeInTheDocument();
++    expect(
++      screen.getByText('AI feedback is advisory. Review model answers for authoritative validation.')
++    ).toBeInTheDocument();
++    expect(
++      screen.getByText('What is the primary function of the Program Counter register? (5 points)')
++    ).toBeInTheDocument();
++  });
++
++  it('tracks student responses and preserves them in localStorage', async () => {
++    render(<PracticeExamView examId={examId} />);
++
++    const mcOption = await screen.findByLabelText('Holds address of next instruction');
++    fireEvent.click(mcOption);
++    expect(mcOption).toBeChecked();
++
++    const cached = JSON.parse(localStorage.getItem(`exam_answers_${examId}`) || '{}');
++    expect(cached['q_1']).toBe('Holds address of next instruction');
++  });
++
++  it('navigates to the next question and renders text inputs for open-ended questions', async () => {
++    render(<PracticeExamView examId={examId} />);
++
++    const nextButton = await screen.findByRole('button', { name: /Next/i });
++    fireEvent.click(nextButton);
++
++    expect(
++      await screen.findByText('Explain the difference between spatial and temporal locality. (10 points)')
++    ).toBeInTheDocument();
++
++    const textArea = screen.getByLabelText(/Your Answer:/i);
++    fireEvent.change(textArea, { target: { value: 'Spatial is locality in space; temporal is in time.' } });
++    expect(textArea).toHaveValue('Spatial is locality in space; temporal is in time.');
++
++    const cached = JSON.parse(localStorage.getItem(`exam_answers_${examId}`) || '{}');
++    expect(cached['q_2']).toBe('Spatial is locality in space; temporal is in time.');
++  });
++
++  it('allows submitting the exam session on the final question', async () => {
++    render(<PracticeExamView examId={examId} />);
++
++    const nextButton = await screen.findByRole('button', { name: /Next/i });
++    fireEvent.click(nextButton);
++
++    const submitButton = await screen.findByRole('button', { name: /Submit Exam/i });
++    fireEvent.click(submitButton);
++
++    await waitFor(() => {
++      expect(screen.getByText(/Exam Submitted Successfully/i)).toBeInTheDocument();
++      expect(screen.getByText('job_eval_4455')).toBeInTheDocument();
++    });
++  });
++});
