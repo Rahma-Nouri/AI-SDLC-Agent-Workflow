@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from agents.correction_loop import CorrectionLoopReport, run_revision
+from agents.correction_loop import BACKEND_TESTS, CorrectionLoopReport, run_revision
 from agents.issue_sync_agent import PILOT_LABEL, label_names, read_marker
 from agents.pilot_git_agent import branch_role
 
@@ -186,9 +186,15 @@ def run_h3_review(
     build_project_context,
     save_proposal,
     ask=input,
+    revision_options=None,
 ):
-    """Show the evidence, take the human's decision, and let the agents act on it."""
+    """Show the evidence, take the human's decision, and let the agents act on it.
 
+    revision_options: extra settings for a revision (frontend: run_tests, frozen).
+    """
+
+    revision_options = revision_options or {}
+    frozen = revision_options.get("frozen", BACKEND_TESTS)
     task_id = task["task_id"]
     summary = git_agent.branch_summary()
     branch = summary["branch"]
@@ -272,12 +278,13 @@ def run_h3_review(
         branch=branch,
         feedback=feedback,
         tests_may_change=tests_may_change,
-        tests_generated=report.tests_run if report else git_agent.files_added_on_branch("tests/"),
+        tests_generated=report.tests_run if report else frozen.on_branch(git_agent),
         last_run=report.runs[-1] if report and report.runs else None,
         backend_agent=backend_agent_factory(),
         git_agent=git_agent,
         build_project_context=build_project_context,
         save_proposal=save_proposal,
         prepare_environment=environment.prepare,
+        **revision_options,
     )
     return {"decision": "revise", "branch": branch, "revision_report": revision_report}

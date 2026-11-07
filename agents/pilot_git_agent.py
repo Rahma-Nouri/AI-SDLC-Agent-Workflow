@@ -247,7 +247,8 @@ class PilotGitAgent:
         return branch
 
     def commit_fix_on_current_branch(
-        self, task_id, patch_path, changed_files, summary, record_paths=(), frozen_prefixes=("tests/",)
+        self, task_id, patch_path, changed_files, summary, record_paths=(), frozen_prefixes=("tests/",),
+        frozen_check=None,
     ):
         """Apply a fix on the CURRENT agent branch and commit it.
 
@@ -260,7 +261,12 @@ class PilotGitAgent:
         records = [self._relative(path) for path in record_paths]
         declared = sorted(set(changed_files))
 
-        frozen = [path for path in declared if path.startswith(tuple(frozen_prefixes))]
+        # frozen_check(path) -> True also freezes a file, for tests found by
+        # name rather than by folder (frontend tests such as App.test.tsx).
+        frozen = [
+            path for path in declared
+            if path.startswith(tuple(frozen_prefixes)) or (frozen_check is not None and frozen_check(path))
+        ]
         if frozen:
             raise FrozenFilesError("The fix tried to change frozen test files: " + ", ".join(frozen))
 

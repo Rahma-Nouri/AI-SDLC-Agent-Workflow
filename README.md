@@ -54,9 +54,9 @@ Run from the workflow folder with the virtual environment active:
 |---|---|---|
 | `python main.py --resume-patch` | Fresh H1/H2 on the saved approved context, then: patch → agent branch → environment → tests → (one fix) → report; waits for H3 | 1 (+1 if a fix is needed) |
 | `python main.py --h2b-ui-stack` | H2b: the Architect proposes the UI stack from the approved snapshot; approve stores it as `ui_stack` in the snapshot, revise sends feedback to the Architect, reject stores nothing. Each decision is saved in `outputs/approvals/` | 1 (+1 per revise) |
-| `python main.py --frontend-patch T7` | Needs an approved `ui_stack`. Fresh H1/H2, then the Frontend Agent proposes a UI patch and commits it on `agent/T7-frontend-attempt-N`. It only writes in the frontend folder (plus `node_modules/` and `dist/` in `.gitignore`). UI tasks only (`UI_TASKS`: T4, T6–T13, T16). No test run and no `npm install` yet (P2.2c); the branch waits for H3 | 1 |
+| `python main.py --frontend-patch T7` | Needs an approved `ui_stack` (test runner: Vitest). Fresh H1/H2, then: Frontend Agent patch → commit on `agent/T7-frontend-attempt-N` → npm packages (the human approves the list when it changes; `npm install --ignore-scripts`, registry packages only) → Vitest → (one fix, tests frozen) → Vitest → report; waits for H3. The agent only writes in the frontend folder (plus `node_modules/` and `dist/` in `.gitignore`). UI tasks only (`UI_TASKS`: T4, T6–T13, T16) | 1 (+1 if a fix is needed) |
 | `python main.py --h3-review` | H3 on the waiting agent branch, backend or frontend: approve / revise / reject | 0 (revise: 1) |
-| `python main.py --retest-agent-branch` | Re-runs the tests on the waiting agent branch | 0 |
+| `python main.py --retest-agent-branch` | Re-runs the tests on the waiting agent branch (pytest, or Vitest on a frontend branch) | 0 |
 | `python main.py --sync-pilot-issues` | Fresh H1, then the Issue Sync Agent aligns the pilot's GitHub Issues with the approved backlog (shows its plan first) | 0 |
 | `python main.py --run-t1-tests` | Early T1-only test command (from P1.3) | 0 |
 | `python main.py` | **Legacy full run:** regenerates the plan, backlog and architecture, **overwrites the official snapshot** (new task IDs), writes into the pilot workspace without an agent commit, then offers a patch. Not aligned with the two-worlds design yet; use only on purpose | several |
@@ -100,7 +100,7 @@ GITHUB_REPOSITORY=owner/repository
 python -m pytest -q
 ```
 
-The default suite works offline (fake Gemini agent, temporary Git repositories). The live Gemini check is opt-in: `RUN_LIVE_GEMINI_TESTS=1`.
+The default suite works offline (fake Gemini agent, fake npm, temporary Git repositories). Two checks are opt-in: live Gemini (`RUN_LIVE_GEMINI_TESTS=1`) and a real `npm install` + Vitest run (`AI_SDLC_REAL_NPM=1`, needs internet).
 
 ## 8. Repository Structure (World 1)
 

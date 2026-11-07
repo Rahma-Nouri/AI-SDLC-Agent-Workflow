@@ -15,9 +15,11 @@
 | 29 Oct 2026 | `python -m pytest -q` | 63 passed, 1 skipped |
 | 2 Nov 2026 (after P1.8, `434002f`) | `python -m pytest -q` | 120 passed, 1 skipped |
 | 7 Nov 2026 (after P2.2a, `b9f0187`) | `python -m pytest -q` | 154 passed, 1 skipped |
-| 7 Nov 2026 (after P2.2b) | `python -m pytest -q` | **193 passed, 1 skipped** |
+| 7 Nov 2026 (after P2.2b, `23ad374`) | `python -m pytest -q` | 193 passed, 1 skipped |
+| 7 Nov 2026 (after P2.2c) | `python -m pytest -q` | **236 passed, 2 skipped** |
+| 7 Nov 2026 (after P2.2c) | `AI_SDLC_REAL_NPM=1`, real npm test only | 1 passed (real `npm install` of Vitest, passing and failing test) |
 
-The skipped test is the opt-in live Gemini check (`RUN_LIVE_GEMINI_TESTS=1`). All other tests run offline, using a fake Gemini agent and temporary Git repositories.
+The two skipped tests are opt-in: the live Gemini check (`RUN_LIVE_GEMINI_TESTS=1`) and the real npm check (`AI_SDLC_REAL_NPM=1`). All other tests run offline, using a fake Gemini agent, a fake npm and temporary Git repositories.
 
 ## 2. Official Backlog Decision (29 Oct 2026)
 
@@ -41,7 +43,8 @@ The approved snapshot `outputs/approved_context/current_approved_context.json` (
 | P1.9 | `b839709` | README and documentation updated to the current state |
 | P2.1, P2.1b | `a18a30b`, `8129a55` | Project-context document; whole spec for the Backend Agent, empty README removed, agent's own claims shown at H3 |
 | P2.2a | `b9f0187` | H2b gate (`--h2b-ui-stack`): the Architect proposes the UI stack, the human decides, approved stack stored as `ui_stack` in the snapshot (React, TypeScript, Vite, Vitest, npm) |
-| P2.2b | this change | Frontend Developer Agent and `--frontend-patch <task>`: UI patch on `agent/<task>-frontend-attempt-N`, committed as "AI-SDLC Frontend Agent"; H3 handles frontend branches, and shows only test reports from the branch under review. Built and tested offline with a fake Gemini client; not yet run with real Gemini |
+| P2.2b | `23ad374` | Frontend Developer Agent and `--frontend-patch <task>`: UI patch on `agent/<task>-frontend-attempt-N`, committed as "AI-SDLC Frontend Agent"; H3 handles frontend branches, and shows only test reports from the branch under review. Built and tested offline with a fake Gemini client; not yet run with real Gemini |
+| P2.2c | this change | Frontend environment (npm packages approved by the human when the list changes; registry packages only; `--ignore-scripts`) and Vitest runner; `--frontend-patch` now runs tests → one fix (frontend test files frozen) → tests; re-test and H3 revise use Vitest on frontend branches. Offline tests plus one real npm test; not yet run on the real pilot |
 
 ## 4. Real-Run Evidence
 
@@ -63,13 +66,13 @@ Failure cases #11–#18 found during these runs, and a comparison of the manual 
 | Ticket Quality Checker not connected to the main flow | Task quality is not checked automatically | Later |
 | T1 acceptance criteria not fully met (e.g. OpenAPI claim overstated, failure case #17) | Issue #47 stays open | Next T1 attempt or follow-up task |
 | Pilot issues are created with the student's GitHub token | Issues show the student as the GitHub author (the text names the agent) | Possible bot account / GitHub App |
-| Frontend code is not tested or checked yet (only `package.json` must be valid JSON) | At H3 a frontend branch has no test evidence, so approving needs a second confirmation | P2.2c |
+| Frontend code has no syntax or automatic checks (only `package.json` must be valid JSON; the automatic checks read `.py` files only) | Problems show up only when Vitest runs | Later |
 | Automatic checks are heuristics | Can miss problems or warn without reason | Accepted for the PoC |
 | Gemini free tier: 20 requests/day; occasional 503 errors | Limits how many runs fit in a day | Accepted for the PoC |
 
 ## 6. Next Steps (P2)
 
 - Run further pilot tasks through the same chain and collect the evaluation data.
-- Frontend test run and environment (P2.2c) and Documentation Agent.
+- First real frontend run (`--frontend-patch T7`) and Documentation Agent.
 - Fix the H2 revise gap and the legacy full run.
 - Evaluation of the agents' work quality for the thesis.

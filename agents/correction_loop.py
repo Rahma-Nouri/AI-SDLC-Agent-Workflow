@@ -12,7 +12,9 @@ The loop never approves anything. Its report ends with "ready_for_review" or
 "needs_revision", and the human decides at H3.
 """
 
-from typing import Literal
+import re
+from pathlib import PurePosixPath
+from typing import Literal, NamedTuple, Optional, Pattern
 
 from agents.agent_contracts import ContractModel
 from agents.output_validation import ValidationFinding, validate_files
@@ -22,6 +24,36 @@ from agents.testing_workflow import run_task_tests
 
 MAX_FIX_ATTEMPTS = 1
 FROZEN_PREFIXES = ("tests/",)
+
+
+class FrozenTests(NamedTuple):
+    """Which files are tests: they are run, and they stay frozen during a fix."""
+
+    folder: str  # where the tests live, for example "tests/"
+    description: str  # how the agent's instructions name them
+    name_pattern: Optional[Pattern] = None  # None: every file in the folder is a test
+
+    def is_test(self, path):
+        return path.startswith(self.folder) and (
+            self.name_pattern is None or bool(self.name_pattern.search(PurePosixPath(path).name))
+        )
+
+    def on_branch(self, git_agent):
+        """The test files the agent branch added or changed."""
+        return [path for path in git_agent.files_added_on_branch(self.folder) if self.is_test(path)]
+
+
+BACKEND_TESTS = FrozenTests("tests/", "any file under tests/")
+
+
+def frontend_tests(frontend_folder):
+    """Frontend tests sit next to the code, so they are found by name: App.test.tsx, api.spec.ts."""
+    folder = frontend_folder.rstrip("/")
+    return FrozenTests(
+        f"{folder}/",
+        f"any test file (*.test.* or *.spec.*) under {folder}/",
+        re.compile(r"\.(test|spec)\.[^.]+$"),
+    )
 
 # Only the end of a long pytest output is kept: it holds the failures and summary.
 OUTPUT_TAIL_CHARS = 4000
@@ -83,7 +115,7 @@ def summarize_run(evidence, attempt):
     )
 
 
-def fix_instructions(base_instructions, branch, failed_run, frozen_tests):
+def fix_instructions(base_instructions, branch, failed_run, frozen_tests, frozen=BACKEND_TESTS):
     """Add the real failure evidence to the normal Orchestrator instructions."""
     return (
         f"{base_instructions}\n\n"
@@ -95,7 +127,7 @@ def fix_instructions(base_instructions, branch, failed_run, frozen_tests):
         f"{failed_run.output_tail}\n\n"
         "Fix the code so that these tests pass. The existing files in the project "
         "context are the current state of the branch.\n"
-        "The tests are FROZEN: do not change any file under tests/, including: "
+        f"The tests are FROZEN: do not change {frozen.description}, including: "
         + ", ".join(frozen_tests)
         + ".\nIf you think a test itself is wrong, say so in unresolved_issues "
         "instead of changing it."
@@ -118,6 +150,7 @@ def run_correction_loop(
     prepare_environment=None,
     tests_generated=None,
     max_fix_attempts=MAX_FIX_ATTEMPTS,
+    frozen=BACKEND_TESTS,
 ):
     """Run the tests, allow one fix, run them again, and return the report.
 
@@ -128,6 +161,7 @@ def run_correction_loop(
         change requirements.txt. None = use the workflow's Python (tests only).
     tests_generated: the tests to run; by default the agent's own tests_added.
     max_fix_attempts: 0 = only re-run the tests (no Gemini request).
+    frozen: which files are tests (backend: tests/; frontend: *.test.* files).
     """
 
     task_id = task["task_id"]
@@ -185,7 +219,7 @@ def run_correction_loop(
             project_context=build_project_context(pilot_root),
         )
         work_package["instructions"] = fix_instructions(
-            work_package["instructions"], branch, runs[-1], tests_run
+            work_package["instructions"], branch, runs[-1], tests_run, frozen
         )
 
         try:
@@ -200,7 +234,7 @@ def run_correction_loop(
         try:
             commit = git_agent.commit_fix_on_current_branch(
                 task_id, patch_path, declared, fix.summary.split(". ")[0][:60],
-                record_paths=[patch_path, report_path], frozen_prefixes=FROZEN_PREFIXES,
+                record_paths=[patch_path, report_path], frozen_prefixes=(), frozen_check=frozen.is_test,
             )
         except FrozenFilesError as error:
             # Keep the rejected proposal as evidence (a real failure case).
@@ -224,12 +258,14 @@ def run_correction_loop(
     return report(runs, fixes, "passed" if runs[-1].passed else "failed")
 
 
-def revision_instructions(base_instructions, branch, feedback, last_run, tests_may_change, test_files):
-    """The human's H3 feedback, plus the latest test evidence, for the Backend Agent."""
+def revision_instructions(
+    base_instructions, branch, feedback, last_run, tests_may_change, test_files, frozen=BACKEND_TESTS
+):
+    """The human's H3 feedback, plus the latest test evidence, for the agent."""
     rule = (
         "The human ALLOWED changes to test files for this revision."
         if tests_may_change
-        else "The tests are FROZEN: do not change any file under tests/, including: " + ", ".join(test_files) + "."
+        else f"The tests are FROZEN: do not change {frozen.description}, including: " + ", ".join(test_files) + "."
     )
     evidence = (
         f"Latest test command: {last_run.command}\nExit code: {last_run.exit_code}\n"
@@ -263,6 +299,7 @@ def run_revision(
     save_proposal,
     prepare_environment,
     run_tests=run_task_tests,
+    frozen=BACKEND_TESTS,
 ):
     """One revision after an H3 "revise": the agent changes, commits, and re-tests."""
 
@@ -283,7 +320,7 @@ def run_revision(
         task, architecture=architecture, project_context=build_project_context(pilot_root)
     )
     work_package["instructions"] = revision_instructions(
-        work_package["instructions"], branch, feedback, last_run, tests_may_change, tests_run
+        work_package["instructions"], branch, feedback, last_run, tests_may_change, tests_run, frozen
     )
 
     try:
@@ -298,7 +335,8 @@ def run_revision(
         commit = git_agent.commit_fix_on_current_branch(
             task_id, patch_path, declared, "H3 revision: " + revision.summary.split(". ")[0][:50],
             record_paths=[patch_path, report_path],
-            frozen_prefixes=() if tests_may_change else FROZEN_PREFIXES,
+            frozen_prefixes=(),
+            frozen_check=None if tests_may_change else frozen.is_test,
         )
     except FrozenFilesError as error:
         git_agent.commit_records(task_id, [patch_path, report_path], "Record a rejected revision proposal")
@@ -313,7 +351,7 @@ def run_revision(
                             patch_path=str(patch_path), code_commit=commit.code_commit))
 
     # The revision may have added or changed tests (if allowed), so look again.
-    tests_run[:] = [path for path in git_agent.files_added_on_branch("tests/") if (pilot_root / path).is_file()]
+    tests_run[:] = [path for path in frozen.on_branch(git_agent) if (pilot_root / path).is_file()]
     if not tests_run:
         return report("no_tests")
 

@@ -39,3 +39,35 @@ def run_task_tests(
         "testing_result": result_data,
         "review": review,
     }
+
+
+def run_frontend_task_tests(
+    orchestrator,
+    task,
+    project_root,
+    test_paths,
+    architecture=None,
+    project_context=None,
+    python_executable=None,
+    *,
+    frontend_folder,
+    runner=None,
+):
+    """Like run_task_tests, but runs Vitest in the frontend folder.
+
+    Same arguments and result shape, so the correction loop can use either one.
+    python_executable is ignored: the frontend tests run with Node, not Python.
+    """
+
+    orchestrator.delegate_task(task, architecture=architecture, project_context=project_context)
+
+    agent = TestingAgent(project_root, runner=runner)
+    testing_result = agent.run_vitest(task["task_id"], frontend_folder, test_paths)
+
+    result_data = testing_result.model_dump()
+    review = orchestrator.evaluate_agent_result(
+        task=task,
+        result=result_data,
+        checks_passed=[check.model_dump() for check in testing_result.checks],
+    )
+    return {"testing_result": result_data, "review": review}

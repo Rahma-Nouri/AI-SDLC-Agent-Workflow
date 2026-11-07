@@ -3,13 +3,15 @@ import json
 import os
 import sys
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from agents.agent_contracts import BackendDeveloperResult, FrontendDeveloperResult, UiStackProposal
 from agents.backend_developer import BackendDeveloperAgent
-from agents.correction_loop import run_correction_loop
+from agents.correction_loop import BACKEND_TESTS, frontend_tests, run_correction_loop
+from agents.frontend_environment import FrontendEnvironment
 from agents.frontend_developer import (
     GENERATED_FOLDERS,
     GITIGNORE,
@@ -24,7 +26,7 @@ from agents.orchestrator import OrchestratorAgent
 from agents.pilot_environment import PilotEnvironment
 from agents.pilot_git_agent import PilotGitAgent, PilotGitError, branch_role, branch_task_id
 from agents.software_architect import SoftwareArchitectAgent
-from agents.testing_workflow import run_task_tests
+from agents.testing_workflow import run_frontend_task_tests, run_task_tests
 from agents.ticket_quality_checker import TicketQualityChecker
 from integrations.github_client import GitHubClient
 
@@ -770,16 +772,46 @@ def build_pilot_project_context(project_root):
     return context
 
 
+def frontend_loop_options(project_root, ui_stack, environment=None, run_command=None):
+    """What the correction loop needs to work on a frontend branch.
+
+    The loop itself is shared; only these parts differ from the backend:
+    the agent's context, the npm environment, the Vitest runner, and which
+    files count as (frozen) tests. run_command replaces subprocess.run in tests.
+    """
+
+    if "vitest" not in ui_stack.test_runner.lower():
+        raise ValueError(f"Only Vitest can run frontend tests so far; the approved test runner is {ui_stack.test_runner}.")
+
+    return {
+        "build_project_context": lambda root: build_frontend_project_context(root, ui_stack),
+        "prepare_environment": (
+            environment or FrontendEnvironment(project_root, ui_stack.frontend_folder)
+        ).prepare,
+        "run_tests": partial(run_frontend_task_tests, frontend_folder=ui_stack.frontend_folder, runner=run_command),
+        "frozen": frontend_tests(ui_stack.frontend_folder),
+    }
+
+
 def run_and_record_correction_loop(
     orchestrator, task, architecture, project_root, report_path, agent_commit, backend_agent, git_agent,
-    environment=None,
+    environment=None, role="backend", loop_options=None,
 ):
-    """Run the correction loop on the agent branch and commit its report there."""
+    """Run the correction loop on the agent branch and commit its report there.
+
+    loop_options: settings that replace the backend ones (see frontend_loop_options).
+    """
 
     project_root = Path(project_root)
     first_result = BackendDeveloperResult.model_validate_json(
         Path(report_path).read_text(encoding="utf-8")
     )
+
+    options = {
+        "build_project_context": build_pilot_project_context,
+        "prepare_environment": (environment or PilotEnvironment(project_root)).prepare,
+        **(loop_options or {}),
+    }
 
     print(f"\nCORRECTION LOOP on {agent_commit.branch}")
     loop_report = run_correction_loop(
@@ -791,11 +823,10 @@ def run_and_record_correction_loop(
         branch=agent_commit.branch,
         backend_agent=backend_agent or BackendDeveloperAgent(),
         git_agent=git_agent,
-        build_project_context=build_pilot_project_context,
         save_proposal=lambda result, label: save_patch_proposal(
-            result, project_root / "outputs" / "proposed_changes", label
+            result, project_root / "outputs" / "proposed_changes", label, role=role
         ),
-        prepare_environment=(environment or PilotEnvironment(project_root)).prepare,
+        **options,
     )
 
     record_loop_report(project_root, task["task_id"], loop_report, git_agent, "correction_loop")
@@ -827,11 +858,12 @@ def record_loop_report(project_root, task_id, loop_report, git_agent, kind):
     print("Waiting for the H3 decision. Nothing was pushed or merged.")
 
 
-def run_retest_agent_branch(project_root, orchestrator, git_agent=None, environment=None):
+def run_retest_agent_branch(project_root, orchestrator, git_agent=None, environment=None, run_command=None):
     """Re-run the tests on the waiting agent branch, without any Gemini request.
 
     Useful after the environment changed (for example: packages now installed).
     The tests are the test files the agent branch added; no fix is attempted.
+    On a frontend branch the npm environment and Vitest are used.
     """
 
     project_root = Path(project_root)
@@ -843,7 +875,6 @@ def run_retest_agent_branch(project_root, orchestrator, git_agent=None, environm
     git_agent = git_agent or PilotGitAgent(project_root, workflow_root=Path(__file__).resolve().parent)
     try:
         branch = git_agent.current_agent_branch()
-        tests = git_agent.files_added_on_branch("tests/")
     except PilotGitError as error:
         print(f"\nNothing to re-test: {error}")
         return None
@@ -852,6 +883,28 @@ def run_retest_agent_branch(project_root, orchestrator, git_agent=None, environm
     task = next((item for item in snapshot["tasks"] if item.get("task_id") == task_id), None)
     if task is None:
         print(f"\nTask {task_id} of branch {branch} is not in the approved backlog.")
+        return None
+
+    options = {
+        "build_project_context": build_pilot_project_context,
+        "prepare_environment": (environment or PilotEnvironment(project_root)).prepare,
+    }
+
+    if branch_role(branch) == "frontend":
+        ui_stack = read_ui_stack(snapshot)
+        if ui_stack is None:
+            return None
+        try:
+            architecture = ui_architecture_context(architecture, task_id)
+            options = frontend_loop_options(project_root, ui_stack, environment, run_command)
+        except ValueError as error:
+            print(f"\nCannot re-test this frontend branch: {error}")
+            return None
+
+    try:
+        tests = options.get("frozen", BACKEND_TESTS).on_branch(git_agent)
+    except PilotGitError as error:
+        print(f"\nNothing to re-test: {error}")
         return None
 
     print(f"\nRE-TEST on {branch} (no Gemini request)")
@@ -865,10 +918,9 @@ def run_retest_agent_branch(project_root, orchestrator, git_agent=None, environm
         branch=branch,
         backend_agent=None,
         git_agent=git_agent,
-        build_project_context=build_pilot_project_context,
         save_proposal=None,
-        prepare_environment=(environment or PilotEnvironment(project_root)).prepare,
         max_fix_attempts=0,
+        **options,
     )
     loop_report.trigger = "retest"
     record_loop_report(project_root, task_id, loop_report, git_agent, "retest")
@@ -1105,8 +1157,12 @@ def build_frontend_project_context(project_root, ui_stack):
     }
 
 
-def run_frontend_patch(project_root, orchestrator, task_id, agent=None, git_agent=None):
-    """One UI patch: checks -> agent proposal -> agent commit on its own branch."""
+def run_frontend_patch(project_root, orchestrator, task_id, agent=None, git_agent=None, environment=None, run_command=None):
+    """One UI task: checks -> agent patch -> agent commit -> npm environment ->
+    Vitest -> (one fix) -> Vitest -> loop report committed; then it waits for H3.
+
+    environment and run_command replace the real npm and Vitest in the tests.
+    """
 
     project_root = Path(project_root)
 
@@ -1124,6 +1180,12 @@ def run_frontend_patch(project_root, orchestrator, task_id, agent=None, git_agen
 
     ui_stack = read_ui_stack(snapshot)
     if ui_stack is None:
+        return None
+
+    try:
+        loop_options = frontend_loop_options(project_root, ui_stack, environment, run_command)
+    except ValueError as error:
+        print(f"\n{error}")
         return None
 
     git_agent = git_agent or PilotGitAgent(project_root, workflow_root=Path(__file__).resolve().parent)
@@ -1147,12 +1209,14 @@ def run_frontend_patch(project_root, orchestrator, task_id, agent=None, git_agen
         return None
 
     try:
+        ui_architecture = ui_architecture_context(architecture, task_id)
         work_package = orchestrator.delegate_task(
             task,
-            architecture=ui_architecture_context(architecture, task_id),
+            architecture=ui_architecture,
             project_context=build_frontend_project_context(project_root, ui_stack),
         )
-        result = (agent or FrontendDeveloperAgent()).create_patch(work_package)
+        agent = agent or FrontendDeveloperAgent()
+        result = agent.create_patch(work_package)
         if not isinstance(result, FrontendDeveloperResult):
             raise TypeError("The Frontend Developer Agent must return a FrontendDeveloperResult.")
         patch_path, report_path = save_patch_proposal(
@@ -1176,14 +1240,27 @@ def run_frontend_patch(project_root, orchestrator, task_id, agent=None, git_agen
         role="frontend",
     )
 
+    loop_report = None
     if agent_commit is not None:
-        print("Frontend tests are added in P2.2c; the branch waits for H3.")
+        loop_report = run_and_record_correction_loop(
+            orchestrator=orchestrator,
+            task=task,
+            architecture=ui_architecture,
+            project_root=project_root,
+            report_path=report_path,
+            agent_commit=agent_commit,
+            backend_agent=agent,  # the fix comes from the Frontend Agent
+            git_agent=git_agent,
+            role="frontend",
+            loop_options=loop_options,
+        )
 
-    return {"patch_path": patch_path, "report_path": report_path, "agent_commit": agent_commit}
+    return {"patch_path": patch_path, "report_path": report_path, "agent_commit": agent_commit, "loop_report": loop_report}
 
 
 def run_h3_review_command(
-    project_root, orchestrator, git_agent=None, environment=None, backend_agent=None, github_client=None, ask=input
+    project_root, orchestrator, git_agent=None, environment=None, backend_agent=None, github_client=None, ask=input,
+    run_command=None,
 ):
     """H3: the human reviews the waiting agent branch and decides; the agents act."""
 
@@ -1210,6 +1287,8 @@ def run_h3_review_command(
     role = branch_role(branch)
     backend_agent_factory = lambda: backend_agent or BackendDeveloperAgent()
     build_project_context = build_pilot_project_context
+    default_environment = PilotEnvironment(project_root)
+    revision_options = {}
 
     if role == "frontend":
         ui_stack = read_ui_stack(snapshot)
@@ -1217,11 +1296,14 @@ def run_h3_review_command(
             return None
         try:
             architecture = ui_architecture_context(architecture, task_id)
+            options = frontend_loop_options(project_root, ui_stack, None, run_command)
         except ValueError as error:
             print(f"\nCould not prepare the UI context: {error}")
             return None
         backend_agent_factory = lambda: backend_agent or FrontendDeveloperAgent()
-        build_project_context = lambda root: build_frontend_project_context(root, ui_stack)
+        build_project_context = options["build_project_context"]
+        default_environment = FrontendEnvironment(project_root, ui_stack.frontend_folder)
+        revision_options = {"run_tests": options["run_tests"], "frozen": options["frozen"]}
 
     if github_client is None:
         try:
@@ -1235,7 +1317,7 @@ def run_h3_review_command(
         architecture=architecture,
         pilot_root=project_root,
         git_agent=git_agent,
-        environment=environment or PilotEnvironment(project_root),
+        environment=environment or default_environment,
         backend_agent_factory=backend_agent_factory,
         github=github_client,
         build_project_context=build_project_context,
@@ -1243,6 +1325,7 @@ def run_h3_review_command(
             result, project_root / "outputs" / "proposed_changes", label, role=role
         ),
         ask=ask,
+        revision_options=revision_options,
     )
 
     if outcome.get("decision") == "revise":

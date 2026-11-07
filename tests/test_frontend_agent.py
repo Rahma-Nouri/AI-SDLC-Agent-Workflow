@@ -187,7 +187,9 @@ def test_happy_path_commits_only_frontend_files_as_the_frontend_agent(tmp_path, 
     # pilot/main is untouched, and it is one Gemini request.
     assert "pilot/app/frontend" not in git(repo, "ls-tree", "-r", "--name-only", "pilot/main")
     assert len(agent.client.requests) == 1
-    assert "Frontend tests are added in P2.2c; the branch waits for H3." in capsys.readouterr().out
+    # The patch declared no tests, so the loop reports that and the branch waits for H3.
+    assert outcome["loop_report"].final_result == "no_tests"
+    assert "Waiting for the H3 decision." in capsys.readouterr().out
 
 
 def test_prompt_has_the_three_context_layers_and_no_backend_text(tmp_path, approve_h2):
@@ -215,14 +217,14 @@ def test_the_stack_comes_from_the_snapshot(tmp_path, approve_h2):
     repo = make_frontend_repo(tmp_path)
     snapshot_path = repo / "outputs" / "approved_context" / "current_approved_context.json"
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    snapshot["ui_stack"] = proposal_data(framework="Vue.js 3", test_runner="Jest")
+    snapshot["ui_stack"] = proposal_data(framework="Vue.js 3", build_tool="Webpack")
     snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
 
     _, agent = run_patch(repo)
 
     prompt = agent.client.requests[0]["contents"]
-    assert "Framework: Vue.js 3" in prompt and "Jest" in prompt
-    assert "React" not in prompt and "Vitest" not in prompt
+    assert "Framework: Vue.js 3" in prompt and "Build tool: Webpack" in prompt
+    assert "React" not in prompt and "Vite\n" not in prompt
 
 
 @pytest.mark.parametrize(
@@ -385,8 +387,10 @@ def test_h3_finds_the_frontend_reports_and_not_the_results_of_another_task(tmp_p
     assert "_frontend_" in screen
     assert "The real submit route does not exist." in screen
     assert "[addressed] The exam is shown." in screen
-    # T1's "passed" result on pilot/main must not look like evidence for T7.
-    assert "No test report found on this branch." in screen
+    # T1's "passed" result on pilot/main must not look like evidence for T7:
+    # H3 shows the T7 branch's own report.
+    assert "automatic: no_tests -> needs_revision" in screen
+    assert "passed -> ready_for_review" not in screen
 
 
 def test_h3_approval_of_a_branch_without_tests_needs_a_second_confirmation(tmp_path, approve_h2, monkeypatch):
