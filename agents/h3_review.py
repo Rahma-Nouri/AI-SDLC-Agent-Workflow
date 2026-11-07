@@ -94,6 +94,12 @@ def show_review(task, summary, report):
         print(f"  {report.trigger}: {report.final_result} -> {report.decision}")
         for run in report.runs:
             print(f"  Run {run.attempt}: exit code {run.exit_code}, passed {run.passed}")
+        if report.validation:
+            print("  Automatic checks (warnings - they can be wrong, you decide):")
+            for finding in report.validation:
+                print(f"  ! {finding.file}:{finding.line} - {finding.message}")
+        else:
+            print("  Automatic checks: no warnings.")
         if report.runs and not report.runs[-1].passed:
             print("  End of the last test output:")
             print("  " + report.runs[-1].output_tail[-1200:].replace("\n", "\n  "))

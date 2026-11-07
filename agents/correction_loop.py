@@ -15,6 +15,7 @@ The loop never approves anything. Its report ends with "ready_for_review" or
 from typing import Literal
 
 from agents.agent_contracts import ContractModel
+from agents.output_validation import ValidationFinding, validate_files
 from agents.pilot_environment import EnvironmentResult
 from agents.pilot_git_agent import FrozenFilesError, PilotGitError
 from agents.testing_workflow import run_task_tests
@@ -50,6 +51,8 @@ class CorrectionLoopReport(ContractModel):
     tests_generated: list[str]  # declared by the Backend Agent
     tests_run: list[str]  # the declared tests that really exist and were run
     environment: list[EnvironmentResult] = []  # one check before each test run
+    # Automatic checks on the branch's code (P1.8). Warnings only: shown at H3.
+    validation: list[ValidationFinding] = []
     runs: list[TestRunSummary]
     fix_attempts: list[FixAttempt]
     final_result: Literal["passed", "failed", "no_tests", "environment_not_ready"]
@@ -58,6 +61,15 @@ class CorrectionLoopReport(ContractModel):
     trigger: Literal["automatic", "retest", "h3_revise"] = "automatic"
     human_feedback: str | None = None
     tests_may_change: bool = False  # only ever True by a human decision at H3
+
+
+def validate_branch(git_agent, pilot_root):
+    """Run the automatic checks on every code file the agent branch changed."""
+    try:
+        changed = [path for path in git_agent.files_added_on_branch(".") if not path.startswith("outputs/")]
+    except Exception:
+        return []
+    return validate_files(pilot_root, changed)
 
 
 def summarize_run(evidence, attempt):
@@ -130,6 +142,7 @@ def run_correction_loop(
             tests_generated=tests_generated,
             tests_run=tests_run,
             environment=environment,
+            validation=validate_branch(git_agent, pilot_root),
             runs=runs,
             fix_attempts=fixes,
             final_result=final_result,
@@ -260,7 +273,8 @@ def run_revision(
     def report(final_result):
         return CorrectionLoopReport(
             task_id=task_id, branch=branch, tests_generated=tests_generated, tests_run=tests_run,
-            environment=environment, runs=runs, fix_attempts=fixes, final_result=final_result,
+            environment=environment, validation=validate_branch(git_agent, pilot_root),
+            runs=runs, fix_attempts=fixes, final_result=final_result,
             decision="ready_for_review" if final_result == "passed" else "needs_revision",
             trigger="h3_revise", human_feedback=feedback, tests_may_change=tests_may_change,
         )

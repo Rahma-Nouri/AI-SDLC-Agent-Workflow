@@ -746,6 +746,8 @@ def record_loop_report(project_root, task_id, loop_report, git_agent, kind):
 
     for check in loop_report.environment:
         print(f"Environment: {check.status} - {check.detail}")
+    for finding in loop_report.validation:
+        print(f"WARNING ({finding.check}) {finding.file}:{finding.line} - {finding.message}")
     print(f"Tests generated: {', '.join(loop_report.tests_generated) or 'none'}")
     print(f"Tests run:       {', '.join(loop_report.tests_run) or 'none'}")
     for run in loop_report.runs:
@@ -801,6 +803,7 @@ def run_retest_agent_branch(project_root, orchestrator, git_agent=None, environm
         prepare_environment=(environment or PilotEnvironment(project_root)).prepare,
         max_fix_attempts=0,
     )
+    loop_report.trigger = "retest"
     record_loop_report(project_root, task_id, loop_report, git_agent, "retest")
     return loop_report
 
