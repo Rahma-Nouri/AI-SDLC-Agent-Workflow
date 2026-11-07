@@ -1,0 +1,34 @@
+{
+  "task_id": "T1",
+  "branch": "agent/T1-attempt-1",
+  "tests_generated": [
+    "tests/test_backend_database.py"
+  ],
+  "tests_run": [
+    "tests/test_backend_database.py"
+  ],
+  "environment": [
+    {
+      "status": "ready",
+      "python": "C:\\Users\\HP\\OneDrive - Budapesti Műszaki és Gazdaságtudományi Egyetem\\1st semester\\AI-SDLC-pilot-workspace\\.venv\\Scripts\\python.exe",
+      "packages": [
+        "SQLAlchemy>=2.0.0",
+        "pytest==9.1.1"
+      ],
+      "installed_now": true,
+      "detail": "Packages approved and installed."
+    }
+  ],
+  "runs": [
+    {
+      "attempt": 0,
+      "command": "\"C:\\Users\\HP\\OneDrive - Budapesti Műszaki és Gazdaságtudományi Egyetem\\1st semester\\AI-SDLC-pilot-workspace\\.venv\\Scripts\\python.exe\" -m pytest tests/test_backend_database.py -q -p no:cacheprovider",
+      "exit_code": 1,
+      "passed": false,
+      "output_tail": "nction TemporaryDirectory._rmtree.<locals>.onexc at 0x000001F0BCB3CD50>\n\n    def _rmtree_unsafe(path, dir_fd, onexc):\n        if dir_fd is not None:\n            raise NotImplementedError(\"dir_fd unavailable on this platform\")\n        try:\n            st = os.lstat(path)\n        except OSError as err:\n            onexc(os.lstat, path, err)\n            return\n        try:\n            if _rmtree_islink(st):\n                # symlinks to directories are forbidden, see bug #1669\n                raise OSError(\"Cannot call rmtree on a symbolic link\")\n        except OSError as err:\n            onexc(os.path.islink, path, err)\n            # can't continue even if onexc hook returns\n            return\n        def onerror(err):\n            if not isinstance(err, FileNotFoundError):\n                onexc(os.scandir, err.filename, err)\n        results = os.walk(path, topdown=False, onerror=onerror, followlinks=os._walk_symlinks_as_files)\n        for dirpath, dirnames, filenames in results:\n            for name in dirnames:\n                fullname = os.path.join(dirpath, name)\n                try:\n                    os.rmdir(fullname)\n                except FileNotFoundError:\n                    continue\n                except OSError as err:\n                    onexc(os.rmdir, fullname, err)\n            for name in filenames:\n                fullname = os.path.join(dirpath, name)\n                try:\n>                   os.unlink(fullname)\nE                   PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\tmpkwquq0ye\\\\test_pilot.db'\n\n..\\..\\..\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\shutil.py:701: PermissionError\n\nDuring handling of the above exception, another exception occurred:\n\nself = <test_backend_database.TestDatabaseBackend testMethod=test_tables_not_created_on_engine_creation>\n\n    def tearDown(self):\n>       self.temp_dir.cleanup()\n\ntests\\test_backend_database.py:17: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n..\\..\\..\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\tempfile.py:976: in cleanup\n    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)\n..\\..\\..\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\tempfile.py:956: in _rmtree\n    _shutil.rmtree(name, onexc=onexc)\n..\\..\\..\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\shutil.py:852: in rmtree\n    _rmtree_impl(path, dir_fd, onexc)\n..\\..\\..\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\shutil.py:705: in _rmtree_unsafe\n    onexc(os.unlink, fullname, err)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n\nfunc = <built-in function unlink>\npath = 'C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\tmpkwquq0ye\\\\test_pilot.db'\nexc = PermissionError(13, 'The process cannot access the file because it is being used by another process')\n\n    def onexc(func, path, exc):\n        # On DragonFly BSD, UF_NOUNLINK removal fails with EISDIR, not EPERM.\n        if isinstance(exc, (PermissionError, IsADirectoryError)):\n            if repeated and path == name:\n                if ignore_errors:\n                    return\n                raise\n    \n            try:\n                if path != name:\n                    _resetperms(_os.path.dirname(path))\n                _resetperms(path)\n    \n                try:\n>                   _os.unlink(path)\nE                   PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\tmpkwquq0ye\\\\test_pilot.db'\n\n..\\..\\..\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\tempfile.py:931: PermissionError\n=========================== short test summary info ===========================\nFAILED tests/test_backend_database.py::TestDatabaseBackend::test_database_initialization_creates_schema_and_records\nFAILED tests/test_backend_database.py::TestDatabaseBackend::test_tables_not_created_on_engine_creation\n2 failed in 0.85s\n"
+    }
+  ],
+  "fix_attempts": [],
+  "final_result": "failed",
+  "decision": "needs_revision"
+}
