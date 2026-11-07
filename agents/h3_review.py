@@ -10,6 +10,11 @@ The human only decides. The agents do the work:
 
 Every decision is saved as a record file (outputs/approvals/), so the human's
 decisions stay traceable in Git, not only in memory.
+
+Docs mode (P2.3): a Documentation Agent branch has no tests. The screen shows
+the document's automatic reference checks instead of test evidence, "approve"
+needs no second confirmation, and "revise" sends the feedback to the
+Documentation Agent, which rewrites the document on the same branch.
 """
 
 import json
@@ -19,15 +24,16 @@ from pathlib import Path, PurePosixPath
 
 from agents.correction_loop import BACKEND_TESTS, CorrectionLoopReport, run_revision
 from agents.issue_sync_agent import PILOT_LABEL, label_names, read_marker
-from agents.pilot_git_agent import branch_role
+from agents.output_validation import validate_files
+from agents.pilot_git_agent import PilotGitError, branch_role
 
 TIMESTAMP = re.compile(r"_(\d{8}_\d{6}_\d{6})\.json$")
 
 # <task>_<role>_<timestamp>_report.json is the first patch of an attempt (role =
-# backend or frontend); a label such as fix1_ or revise1_ before the timestamp
+# backend, frontend or docs); a label such as fix1_ or revise1_ before the timestamp
 # marks a later change.
 AGENT_REPORT = re.compile(
-    r"_(?P<role>backend|frontend)_(?P<label>[a-z]+\d+_)?(?P<timestamp>\d{8}_\d{6}_\d{6})_report\.json$"
+    r"_(?P<role>backend|frontend|docs)_(?P<label>[a-z]+\d+_)?(?P<timestamp>\d{8}_\d{6}_\d{6})_report\.json$"
 )
 
 
@@ -173,6 +179,80 @@ def show_review(task, summary, report, agent_reports=()):
     print("=" * 70)
 
 
+DOCS_PREFIX = "pilot/docs/"
+
+
+def document_checks(git_agent, pilot_root):
+    """The automatic reference checks on the documents the branch added or changed."""
+    documents = git_agent.files_added_on_branch(DOCS_PREFIX)
+    return documents, validate_files(pilot_root, documents)
+
+
+def show_document_review(task, summary, documents, findings, agent_reports=()):
+    print("\n" + "=" * 70)
+    print("H3 - HUMAN REVIEW: DOCUMENT")
+    print("=" * 70)
+    print(f"Task:   {task['task_id']} - {task.get('title', '')}")
+    print(f"Branch: {summary['branch']}")
+    print("\nAgent commits:")
+    for line in summary["commits"]:
+        print(f"  {line}")
+    print("\nChanged files (without run records):")
+    print(summary["changed_files"] or "  none")
+    print("\nPlease READ the document before you decide (a document has no tests):")
+    for path in documents or ["  no document found on this branch"]:
+        print(f"  {path}")
+    if findings:
+        print("\nAutomatic checks (warnings - they can be wrong, you decide):")
+        for finding in findings:
+            print(f"  ! {finding.file}:{finding.line} - {finding.message}")
+    else:
+        print("\nAutomatic checks: no warnings (every path and code name in backticks exists).")
+    show_agent_reports(list(agent_reports))
+    print("=" * 70)
+
+
+def run_document_revision(*, orchestrator, task, architecture, pilot_root, branch, feedback,
+                          docs_agent, git_agent, build_project_context, save_proposal):
+    """One revision of a document after an H3 "revise": the agent rewrites it on the same branch.
+
+    Returns a small dict for the screen and the caller: outcome, detail, findings.
+    """
+
+    task_id = task["task_id"]
+    work_package = orchestrator.delegate_task(
+        task, architecture=architecture, project_context=build_project_context(pilot_root)
+    )
+    work_package["instructions"] = (
+        f"{work_package['instructions']}\n\n"
+        "REVISION REQUEST\n"
+        f"Your document is committed on branch {branch}. The human reviewer asked for changes:\n"
+        f"{feedback}\n"
+        "Return the complete updated document. Keep everything the feedback does not ask to change."
+    )
+
+    try:
+        revision = docs_agent.create_patch(work_package)
+    except Exception as error:
+        return {"outcome": "failed", "detail": f"No revision proposal: {error}", "findings": []}
+
+    patch_path, report_path = save_proposal(revision, "revise1_")
+    declared = [item.path for item in revision.changed_files]
+    try:
+        commit = git_agent.commit_fix_on_current_branch(
+            task_id, patch_path, declared, "H3 revision: " + revision.summary.split(". ")[0][:50],
+            record_paths=[patch_path, report_path], frozen_prefixes=(),
+            reason="Proposed by the Documentation Agent after the human's H3 feedback. "
+                   "Not approved yet: waiting for the H3 decision.",
+        )
+    except PilotGitError as error:
+        git_agent.commit_records(task_id, [patch_path, report_path], "Record a revision proposal that could not be applied")
+        return {"outcome": "failed", "detail": str(error), "findings": []}
+
+    _documents, findings = document_checks(git_agent, pilot_root)
+    return {"outcome": "committed", "detail": revision.summary, "code_commit": commit.code_commit, "findings": findings}
+
+
 def run_h3_review(
     *,
     orchestrator,
@@ -199,13 +279,22 @@ def run_h3_review(
     summary = git_agent.branch_summary()
     branch = summary["branch"]
     role = branch_role(branch)
-    report = latest_test_report(pilot_root, git_agent.files_added_on_branch("outputs/test_results/"))
-    show_review(task, summary, report, agent_reports_on_branch(git_agent, pilot_root, task_id, role))
+    is_document = role == "docs"
+    agent_reports = agent_reports_on_branch(git_agent, pilot_root, task_id, role)
+
+    if is_document:
+        report = None
+        documents, findings = document_checks(git_agent, pilot_root)
+        show_document_review(task, summary, documents, findings, agent_reports)
+    else:
+        report = latest_test_report(pilot_root, git_agent.files_added_on_branch("outputs/test_results/"))
+        show_review(task, summary, report, agent_reports)
 
     decision = ask_choice(ask, "Enter 'approve', 'revise', or 'reject': ", ("approve", "revise", "reject"))
     tests_passed = report is not None and report.final_result == "passed"
 
-    if decision == "approve" and not tests_passed:
+    # A document has no tests, so "no test report" is not a reason to ask twice.
+    if decision == "approve" and not tests_passed and not is_document:
         print("\nThe latest tests did NOT pass.")
         confirm = ask_choice(ask, "Type 'approve' again to approve anyway, or 'cancel': ", ("approve", "cancel"))
         if confirm == "cancel":
@@ -221,6 +310,10 @@ def run_h3_review(
         "latest_tests": report.final_result if report else None,
         "agent_commits": summary["commits"],
     }
+    if is_document:
+        record["latest_tests"] = "not_applicable (document)"
+        record["documents"] = documents
+        record["document_checks"] = [f"{item.file}:{item.line} - {item.message}" for item in findings]
 
     if decision == "approve":
         record["notes"] = ask("Optional note for the record (Enter to skip): ").strip()
@@ -260,7 +353,27 @@ def run_h3_review(
     # revise
     feedback = ""
     while not feedback:
-        feedback = ask(f"Your feedback for the {role.title()} Agent: ").strip()
+        feedback = ask(f"Your feedback for the {'Documentation' if is_document else role.title()} Agent: ").strip()
+
+    if is_document:
+        # No tests to freeze or re-run: the agent rewrites the document, then the
+        # human reviews it again with a new --h3-review.
+        record["notes"] = feedback
+        orchestrator.record_approval("H3", "revise", feedback)
+        record_path = write_decision_record(pilot_root, task_id, record)
+        git_agent.commit_records(task_id, [record_path], "Record the H3 revision request")
+        print(f"\nREVISION on {branch}")
+        revision = run_document_revision(
+            orchestrator=orchestrator, task=task, architecture=architecture, pilot_root=Path(pilot_root),
+            branch=branch, feedback=feedback, docs_agent=backend_agent_factory(), git_agent=git_agent,
+            build_project_context=build_project_context, save_proposal=save_proposal,
+        )
+        print(f"Revision: {revision['outcome']} - {revision['detail']}")
+        for finding in revision["findings"]:
+            print(f"  ! {finding.file}:{finding.line} - {finding.message}")
+        print("Review the document again with: python main.py --h3-review")
+        return {"decision": "revise", "branch": branch, "document_revision": revision}
+
     tests_may_change = ask_choice(
         ask, "May the agent change test files for this revision? (yes/no): ", ("yes", "no")
     ) == "yes"

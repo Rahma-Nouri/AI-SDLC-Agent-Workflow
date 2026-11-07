@@ -8,9 +8,21 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from agents.agent_contracts import BackendDeveloperResult, FrontendDeveloperResult, UiStackProposal
+from agents.agent_contracts import (
+    BackendDeveloperResult,
+    DocumentationResult,
+    FrontendDeveloperResult,
+    UiStackProposal,
+)
 from agents.backend_developer import BackendDeveloperAgent
 from agents.correction_loop import BACKEND_TESTS, frontend_tests, run_correction_loop
+from agents.documentation_agent import (
+    DOC_TASKS,
+    DOCS_FOLDER,
+    DocumentationAgent,
+    docs_architecture_context,
+    newest_agent_report,
+)
 from agents.frontend_environment import FrontendEnvironment
 from agents.frontend_developer import (
     GENERATED_FOLDERS,
@@ -20,7 +32,7 @@ from agents.frontend_developer import (
     ui_architecture_context,
 )
 from agents.h2b_ui_stack import run_h2b_review
-from agents.h3_review import run_h3_review
+from agents.h3_review import document_checks, run_h3_review
 from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
 from agents.pilot_environment import PilotEnvironment
@@ -963,7 +975,8 @@ def apply_patch_with_pilot_git_agent(project_root, patch_path, report_path, reco
     print(f"Code commit:    {agent_commit.code_commit}")
     print(f"Records commit: {agent_commit.records_commit}")
     print(f"Files:          {', '.join(agent_commit.committed_files)}")
-    print("Not pushed and not merged: this waits for the tests and the H3 decision.")
+    waits_for = "the H3 decision" if role == "docs" else "the tests and the H3 decision"
+    print(f"Not pushed and not merged: this waits for {waits_for}.")
     return agent_commit
 
 
@@ -1258,6 +1271,119 @@ def run_frontend_patch(project_root, orchestrator, task_id, agent=None, git_agen
     return {"patch_path": patch_path, "report_path": report_path, "agent_commit": agent_commit, "loop_report": loop_report}
 
 
+def build_docs_project_context(project_root, task_id):
+    """What the Documentation Agent sees (layers L0 and L2 of docs/project_context.md).
+
+    existing_files holds only the documentation folder: that is all the agent may
+    change, and Python needs the exact old content to build the patch. The code
+    is given separately, read-only.
+    """
+
+    project_root = Path(project_root)
+    settings = DOC_TASKS[task_id]
+
+    docs_root = project_root / DOCS_FOLDER
+    if docs_root.is_symlink():
+        raise ValueError("The documentation folder cannot be a symlink.")
+    existing_files = {}
+    if docs_root.is_dir():
+        for path in sorted(docs_root.rglob("*.md")):
+            if path.is_symlink():
+                raise ValueError(f"Symlink found in the documentation folder: {path}")
+            existing_files[path.relative_to(project_root).as_posix()] = read_text_file(path)
+
+    source_files = {}
+    for relative in settings["source_files"]:
+        path = project_root / relative
+        # A missing file is shown as missing, so the agent cannot pretend it exists.
+        source_files[relative] = read_text_file(path) if path.is_file() else "(this file does not exist)"
+
+    return {
+        "pilot_specification": read_text_file(project_root / "pilot" / "pilot_specification.md"),
+        "source_files": source_files,
+        "code_agent_report": newest_agent_report(project_root, task_id, settings["code_role"]),
+        "existing_files": existing_files,
+        "existing_file_paths": sorted(existing_files),
+        "existing_files_complete": True,
+    }
+
+
+def run_docs_patch(project_root, orchestrator, task_id, agent=None, git_agent=None):
+    """One document: checks -> agent writes the document -> agent commit ->
+    automatic reference checks; then it waits for H3 (no tests for a document).
+    """
+
+    project_root = Path(project_root)
+
+    if task_id not in DOC_TASKS:
+        print(f"\nThe Documentation Agent has no document defined for {task_id}. Supported: {', '.join(DOC_TASKS)}.")
+        return None
+
+    git_agent = git_agent or PilotGitAgent(project_root, workflow_root=Path(__file__).resolve().parent)
+
+    # Check the workspace first: a Gemini request must not be spent on a
+    # document that could not be committed anyway.
+    try:
+        git_agent.ensure_ready()
+    except PilotGitError as error:
+        print(f"\nThe pilot workspace is not ready: {error}")
+        return None
+
+    approved = request_fresh_approvals(project_root, orchestrator, next_step="the documentation patch")
+    if approved is None:
+        return None
+
+    snapshot, architecture = approved
+    task = next((item for item in snapshot["tasks"] if item.get("task_id") == task_id), None)
+    if task is None:
+        print(f"\nTask {task_id} is not in the approved backlog.")
+        return None
+
+    try:
+        work_package = orchestrator.delegate_task(
+            task,
+            architecture=docs_architecture_context(architecture, task_id),
+            project_context=build_docs_project_context(project_root, task_id),
+        )
+        agent = agent or DocumentationAgent()
+        result = agent.create_patch(work_package)
+        if not isinstance(result, DocumentationResult):
+            raise TypeError("The Documentation Agent must return a DocumentationResult.")
+        patch_path, report_path = save_patch_proposal(
+            result, project_root / "outputs" / "proposed_changes", role="docs"
+        )
+    except Exception as error:
+        print(f"\nDocumentation patch generation failed: {error}")
+        print("No agent branch was created.")
+        return None
+
+    print("\nDocument proposal created.")
+    print(f"Patch:  {patch_path}")
+    print(f"Report: {report_path}")
+
+    agent_commit = apply_patch_with_pilot_git_agent(
+        project_root=project_root,
+        patch_path=patch_path,
+        report_path=report_path,
+        record_paths=[patch_path, report_path],
+        git_agent=git_agent,
+        role="docs",
+    )
+
+    findings = []
+    if agent_commit is not None:
+        _documents, findings = document_checks(git_agent, project_root)
+        if findings:
+            print("\nAutomatic checks (warnings - the human decides at H3):")
+            for finding in findings:
+                print(f"  ! {finding.file}:{finding.line} - {finding.message}")
+        else:
+            print("\nAutomatic checks: no warnings.")
+        print("Next: read the document, then run: python main.py --h3-review")
+
+    return {"patch_path": patch_path, "report_path": report_path, "agent_commit": agent_commit, "findings": findings}
+
+
 def run_h3_review_command(
     project_root, orchestrator, git_agent=None, environment=None, backend_agent=None, github_client=None, ask=input,
     run_command=None,
@@ -1305,6 +1431,18 @@ def run_h3_review_command(
         default_environment = FrontendEnvironment(project_root, ui_stack.frontend_folder)
         revision_options = {"run_tests": options["run_tests"], "frozen": options["frozen"]}
 
+    if role == "docs":
+        if task_id not in DOC_TASKS:
+            print(f"\nThe Documentation Agent has no document defined for {task_id}.")
+            return None
+        try:
+            architecture = docs_architecture_context(architecture, task_id)
+        except ValueError as error:
+            print(f"\nCould not prepare the documentation context: {error}")
+            return None
+        backend_agent_factory = lambda: backend_agent or DocumentationAgent()
+        build_project_context = lambda root: build_docs_project_context(root, task_id)
+
     if github_client is None:
         try:
             github_client = GitHubClient()
@@ -1328,7 +1466,9 @@ def run_h3_review_command(
         revision_options=revision_options,
     )
 
-    if outcome.get("decision") == "revise":
+    # A document revision has no test report: its proposal and report are
+    # already committed by the agent with the revision.
+    if outcome.get("decision") == "revise" and "revision_report" in outcome:
         record_loop_report(project_root, task_id, outcome["revision_report"], git_agent, "h3_revise")
 
     return outcome
@@ -1360,6 +1500,11 @@ def main(argv=None):
         "--frontend-patch",
         metavar="TASK",
         help="Let the Frontend Agent propose and commit a UI patch for this task, for example T7.",
+    )
+    parser.add_argument(
+        "--docs-patch",
+        metavar="TASK",
+        help="Let the Documentation Agent write and commit the document for this task, for example T1.",
     )
     parser.add_argument(
         "--h3-review",
@@ -1421,6 +1566,14 @@ def main(argv=None):
             project_root=project_root,
             orchestrator=orchestrator,
             task_id=args.frontend_patch,
+        )
+        return
+
+    if args.docs_patch:
+        run_docs_patch(
+            project_root=project_root,
+            orchestrator=orchestrator,
+            task_id=args.docs_patch,
         )
         return
 

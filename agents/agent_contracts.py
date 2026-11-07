@@ -70,6 +70,14 @@ class FrontendDeveloperResult(BackendDeveloperResult):
     """
 
 
+class DocumentationModelResponse(BackendDeveloperModelResponse):
+    """Same fields as the backend response; tests_added must stay empty (checked by the agent)."""
+
+
+class DocumentationResult(BackendDeveloperResult):
+    """Same fields as the backend result, so saving the proposal and H3 accept it too."""
+
+
 class TestCheckResult(ContractModel):
     # This Pydantic model is imported by tests, but is not itself a test class.
     __test__ = False

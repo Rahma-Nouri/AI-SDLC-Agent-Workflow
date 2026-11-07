@@ -38,6 +38,13 @@ AGENT_ROLES = {
         "title": "Frontend Developer Agent",
         "branch_part": "-frontend",
     },
+    # P2.3: the Documentation Agent writes only Markdown under pilot/docs/.
+    "docs": {
+        "name": "AI-SDLC Documentation Agent",
+        "email": "docs-agent@ai-sdlc.local",
+        "title": "Documentation Agent",
+        "branch_part": "-docs",
+    },
 }
 
 # Everything under outputs/ is a run record (proposals, reports, snapshot).
@@ -51,14 +58,22 @@ def _branch_work_name(branch):
     return branch[len(BRANCH_PREFIX):].split("-attempt-")[0]
 
 
+def branch_role(branch):
+    """Which agent owns a branch: 'frontend', 'docs' or 'backend'.
+
+    The role is the branch name's ending before "-attempt-": agent/T1-docs-attempt-1
+    is a docs branch. Backend branches have no ending (agent/T1-attempt-1).
+    """
+    work_name = _branch_work_name(branch)
+    for role, details in AGENT_ROLES.items():
+        if details["branch_part"] and work_name.endswith(details["branch_part"]):
+            return role
+    return "backend"
+
+
 def branch_task_id(branch):
     """The task of an agent branch: agent/T7-frontend-attempt-1 -> T7"""
-    return _branch_work_name(branch).removesuffix(AGENT_ROLES["frontend"]["branch_part"])
-
-
-def branch_role(branch):
-    """Which agent owns a branch: 'frontend' or 'backend'."""
-    return "frontend" if _branch_work_name(branch).endswith(AGENT_ROLES["frontend"]["branch_part"]) else "backend"
+    return _branch_work_name(branch).removesuffix(AGENT_ROLES[branch_role(branch)]["branch_part"])
 
 
 def commit_identity(branch):
@@ -170,7 +185,7 @@ class PilotGitAgent:
 
         changed_files: the files the agent declared in its result.
         record_paths: run records to commit too (patch, report, snapshot).
-        role: which agent's work this is ("backend" or "frontend").
+        role: which agent's work this is ("backend", "frontend" or "docs").
         """
 
         patch_path = Path(patch_path).resolve()
@@ -248,9 +263,13 @@ class PilotGitAgent:
 
     def commit_fix_on_current_branch(
         self, task_id, patch_path, changed_files, summary, record_paths=(), frozen_prefixes=("tests/",),
-        frozen_check=None,
+        frozen_check=None, reason=None,
     ):
         """Apply a fix on the CURRENT agent branch and commit it.
+
+        reason: the second line of the commit message. The default describes a
+        fix after failing tests; a document revision has no tests, so it passes
+        its own reason.
 
         Files under frozen_prefixes (the tests) may not change during a fix:
         an AI asked to "make the tests pass" could otherwise weaken the tests.
@@ -297,7 +316,7 @@ class PilotGitAgent:
             self._git("add", "--", *declared)
             self._git(
                 *commit_identity(branch), "commit", "-m", f"[{task_id}] Fix: {summary}",
-                "-m", f"Proposed by the {title} after failing tests (correction loop). Not approved yet: waiting for the H3 decision.",
+                "-m", reason or f"Proposed by the {title} after failing tests (correction loop). Not approved yet: waiting for the H3 decision.",
             )
             code_commit = self._git("rev-parse", "--short", "HEAD").stdout.strip()
             state["committed"] = True

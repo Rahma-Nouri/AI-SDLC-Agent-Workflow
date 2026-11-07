@@ -7,6 +7,14 @@ A. imports_vs_requirements: the agent's code imports a package that is not in
 B. unclosed_resources: a database connection or engine is opened but never
    closed, which breaks on Windows (failure cases #12 and #18 - seen twice).
 
+For documents written by the Documentation Agent (P2.3), two checks look for
+hallucinated references - names that sound right but do not exist:
+
+C. docs_paths: a file path in `backticks` that does not exist in the pilot.
+D. docs_names: a code name in `backticks` (a function such as `get_engine()`,
+   a class such as `ExamSession`, or `Class.method`) that is not defined,
+   imported or used anywhere in the pilot's Python code.
+
 The checks only WARN. They are simple rules (heuristics), so they can be
 wrong; the human sees the warnings at H3 and makes the decision.
 """
@@ -14,7 +22,7 @@ wrong; the human sees the warnings at H3 and makes the decision.
 import ast
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from agents.agent_contracts import ContractModel
@@ -41,7 +49,7 @@ CLOSING_METHODS = {"close", "dispose"}
 
 
 class ValidationFinding(ContractModel):
-    check: Literal["imports_vs_requirements", "unclosed_resources"]
+    check: Literal["imports_vs_requirements", "unclosed_resources", "docs_paths", "docs_names"]
     file: str
     line: int
     message: str
@@ -165,16 +173,128 @@ def check_unclosed_resources(path, tree):
     return findings
 
 
+# --- checks C and D: references in Markdown documents -------------------------
+
+# Folders that are never part of the pilot's own content.
+IGNORED_FOLDERS = {".git", ".venv", "node_modules", "dist", "__pycache__", "outputs"}
+
+FENCE = re.compile(r"^\s*(```|~~~)")
+INLINE_CODE = re.compile(r"`([^`\n]+)`")
+# A path: no spaces, and either a folder part ("pilot/app") or a file ending (".py").
+PATH_LIKE = re.compile(r"^[\w.\-/]+$")
+FILE_ENDING = re.compile(r"\.[A-Za-z]{1,5}$")
+# Code names: get_engine(), ExamSession, Base.metadata, Base.metadata.create_all()
+CALL_NAME = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*\(\)$")
+DOTTED_NAME = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
+CLASS_NAME = re.compile(r"^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+$")
+
+
+def pilot_files(pilot_root):
+    """Relative paths of the pilot's own files and folders (without generated ones)."""
+    pilot_root = Path(pilot_root)
+    found = set()
+    for path in pilot_root.rglob("*"):
+        relative = path.relative_to(pilot_root)
+        if IGNORED_FOLDERS & set(relative.parts):
+            continue
+        found.add(relative.as_posix())
+    return found
+
+
+def defined_names(pilot_root, files):
+    """Every class, function, assigned, imported or attribute name in the pilot's Python code."""
+    names = set()
+    for relative in files:
+        if not relative.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse((Path(pilot_root) / relative).read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                # Also attributes the code only uses, such as Base.metadata.create_all:
+                # they come from a library, and a document may name them correctly.
+                names.add(node.attr)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    names.add((alias.asname or alias.name).split(".")[0])
+                    names.add(alias.name.split(".")[-1])
+    return names
+
+
+def inline_code_spans(text):
+    """(line number, `code` text) outside fenced code blocks such as Mermaid diagrams."""
+    in_fence = False
+    for number, line in enumerate(text.splitlines(), start=1):
+        if FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            for match in INLINE_CODE.finditer(line):
+                yield number, match.group(1).strip()
+
+
+def looks_like_path(token):
+    # "/api/v1/exams" is an API route, not a file; "https://..." is a link.
+    if token.startswith("/") or "://" in token or not PATH_LIKE.match(token):
+        return False
+    return "/" in token or bool(FILE_ENDING.search(token))
+
+
+def check_markdown_references(relative, text, files, names):
+    """Checks C and D for one Markdown document."""
+    basenames = {PurePosixPath(path).name for path in files}
+    findings = []
+
+    for line, token in inline_code_spans(text):
+        if CALL_NAME.match(token) or DOTTED_NAME.match(token) or CLASS_NAME.match(token):
+            # For Base.metadata.create_all() the first and last parts must exist.
+            parts = token.removesuffix("()").split(".")
+            # A dotted name with a file ending (database.py) is a path, handled below.
+            if not (DOTTED_NAME.match(token) and FILE_ENDING.search(token) and looks_like_path(token)):
+                missing = [part for part in {parts[0], parts[-1]} if part not in names]
+                if missing:
+                    findings.append(ValidationFinding(
+                        check="docs_names", file=relative, line=line,
+                        message=f"`{token}`: {', '.join(sorted(missing))} is not found in the pilot's Python code",
+                    ))
+                continue
+
+        if looks_like_path(token):
+            clean = token.rstrip("/")
+            exists = clean in files if "/" in clean else clean in basenames
+            if not exists:
+                findings.append(ValidationFinding(
+                    check="docs_paths", file=relative, line=line,
+                    message=f"`{token}` does not exist in the pilot workspace",
+                ))
+    return findings
+
+
 # --- running the checks -------------------------------------------------------
 
 def validate_files(pilot_root, changed_paths):
-    """Run all checks on the changed Python files of the pilot workspace."""
+    """Run all checks on the changed Python and Markdown files of the pilot workspace."""
     pilot_root = Path(pilot_root)
     required = {normalize_package(item) for item in read_requirements(pilot_root / "requirements.txt")}
     # Top-level folders and modules of the pilot itself are local, not packages.
     local_roots = {entry.stem if entry.suffix == ".py" else entry.name for entry in pilot_root.iterdir()}
 
     findings = []
+    markdown = [relative for relative in sorted(changed_paths) if relative.endswith(".md")]
+    if markdown:
+        files = pilot_files(pilot_root)
+        names = defined_names(pilot_root, files)
+        for relative in markdown:
+            path = pilot_root / relative
+            if path.is_file():
+                findings += check_markdown_references(relative, path.read_text(encoding="utf-8"), files, names)
+
     for relative in sorted(changed_paths):
         path = pilot_root / relative
         if path.suffix != ".py" or not path.is_file():
