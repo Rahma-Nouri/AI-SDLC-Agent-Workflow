@@ -28,7 +28,7 @@ The pilot project is the **AI-Powered Adaptive Exam Preparation System**. The pi
 | Testing | `agents/testing_agent.py`, `agents/testing_workflow.py` | Implemented | Runs pytest on the agent's tests in the pilot's own Python (no shell, time limit, no cache files); records command, exit code and output; never approves |
 | Pilot Git Agent | `agents/pilot_git_agent.py` | Implemented | Creates `agent/<task>-attempt-N`, applies and commits patches as "AI-SDLC Backend Agent", commits run records, merges and pushes after H3 approval, deletes the branch after rejection; refuses the World 1 folder and hand-made changes |
 | Issue Sync Agent | `agents/issue_sync_agent.py` | Implemented | After H1, creates one GitHub issue per approved task (label `world: pilot`, hidden task marker) and closes old generated issues as "not planned"; never touches World 1 issues |
-| Frontend Developer | — | Planned (P2.2) | UI work for the pilot, after the UI stack is decided |
+| Frontend Developer | `agents/frontend_developer.py` | Built in P2.2b (offline tests only, no real Gemini run yet; tests in P2.2c) | UI work for the pilot, after the UI stack is decided |
 | Documentation | — | Planned (P2.3) | Pilot documentation from the approved architecture, accepted code and test results |
 | DevOps / Deployment | — | Planned (P3.3, only if time allows) | Deployment and the H4 gate |
 

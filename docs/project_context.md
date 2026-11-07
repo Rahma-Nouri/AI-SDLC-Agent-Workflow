@@ -100,7 +100,7 @@ An **architecture slice** is only the part of the architecture that concerns one
 | Legacy `python main.py` overwrites the snapshot | The source of truth can be replaced by accident | Later: P2.5 |
 | T1 hard-coded in `create_t1_backend_patch` and in the prompt | The chain cannot start T2 | Later: P2.5 |
 | `T1_TEST_PATHS` names `tests/test_backend_database_schema.py`, which is not in the pilot | `--run-t1-tests` is broken | Later: P2.5 |
-| `latest_test_report` is not filtered by task | A branch with no report could show T1's evidence at H3 | Later: P2.5 |
+| `latest_test_report` is not filtered by task | A branch with no report could show T1's evidence at H3 | **Fixed in P2.2b** (H3 uses only test reports added by the branch) |
 | No dependency status or finished-work context | Agent cannot see what earlier tasks produced | Later: P2.5 (L1) |
 | Unmet criteria are not carried forward | Unfinished T1 work (issue #47) is invisible to agents | Later: P2.5 (L1) |
 | Whole architecture sent for every task | 32 KB per request; about 15 KB of code today | Later: P2.5 (L1 slice) |

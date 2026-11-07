@@ -22,10 +22,49 @@ AGENT_EMAIL = "backend-agent@ai-sdlc.local"
 BASE_BRANCH = "pilot/main"
 BRANCH_PREFIX = "agent/"
 
+# Which agent wrote the work. The role decides the commit author and the branch
+# name; a frontend attempt is called agent/T7-frontend-attempt-1, so it can
+# never clash with the backend's agent/T7-attempt-1.
+AGENT_ROLES = {
+    "backend": {
+        "name": AGENT_NAME,
+        "email": AGENT_EMAIL,
+        "title": "Backend Developer Agent",
+        "branch_part": "",
+    },
+    "frontend": {
+        "name": "AI-SDLC Frontend Agent",
+        "email": "frontend-agent@ai-sdlc.local",
+        "title": "Frontend Developer Agent",
+        "branch_part": "-frontend",
+    },
+}
+
 # Everything under outputs/ is a run record (proposals, reports, snapshot).
 # Records never block a run, and the agent commits them on its branch, so
 # evidence of earlier failed attempts is kept, not lost.
 RECORDS_PREFIX = "outputs/"
+
+
+def _branch_work_name(branch):
+    """agent/T7-frontend-attempt-1 -> T7-frontend"""
+    return branch[len(BRANCH_PREFIX):].split("-attempt-")[0]
+
+
+def branch_task_id(branch):
+    """The task of an agent branch: agent/T7-frontend-attempt-1 -> T7"""
+    return _branch_work_name(branch).removesuffix(AGENT_ROLES["frontend"]["branch_part"])
+
+
+def branch_role(branch):
+    """Which agent owns a branch: 'frontend' or 'backend'."""
+    return "frontend" if _branch_work_name(branch).endswith(AGENT_ROLES["frontend"]["branch_part"]) else "backend"
+
+
+def commit_identity(branch):
+    """Git options that make the branch's own agent the commit author."""
+    role = AGENT_ROLES[branch_role(branch)]
+    return ["-c", f"user.name={role['name']}", "-c", f"user.email={role['email']}"]
 
 
 class AgentCommitResult(ContractModel):
@@ -117,19 +156,21 @@ class PilotGitAgent:
                 "The pilot workspace has unexpected changes: " + ", ".join(unexpected)
             )
 
-    def next_branch_name(self, task_id):
-        """agent/<task>-attempt-<n>, where n counts earlier attempts."""
-        existing = self._git("branch", "--list", f"{BRANCH_PREFIX}{task_id}-attempt-*").stdout
+    def next_branch_name(self, task_id, role="backend"):
+        """agent/<task>-attempt-<n>, where n counts earlier attempts of this role."""
+        base = f"{BRANCH_PREFIX}{task_id}{AGENT_ROLES[role]['branch_part']}-attempt-"
+        existing = self._git("branch", "--list", f"{base}*").stdout
         attempts = [line for line in existing.splitlines() if line.strip()]
-        return f"{BRANCH_PREFIX}{task_id}-attempt-{len(attempts) + 1}"
+        return f"{base}{len(attempts) + 1}"
 
     # --- the main step -----------------------------------------------------
 
-    def apply_patch_on_new_branch(self, task_id, patch_path, changed_files, summary, record_paths=()):
+    def apply_patch_on_new_branch(self, task_id, patch_path, changed_files, summary, record_paths=(), role="backend"):
         """Create the agent branch, apply the patch, and commit it.
 
         changed_files: the files the agent declared in its result.
         record_paths: run records to commit too (patch, report, snapshot).
+        role: which agent's work this is ("backend" or "frontend").
         """
 
         patch_path = Path(patch_path).resolve()
@@ -141,7 +182,7 @@ class PilotGitAgent:
         # Check before creating anything: a patch that does not apply leaves no trace.
         self._git("apply", "--check", str(patch_path))
 
-        branch = self.next_branch_name(task_id)
+        branch = self.next_branch_name(task_id, role)
         if not branch.startswith(BRANCH_PREFIX):
             raise PilotGitError("Agents may only commit on their own agent/ branches.")
 
@@ -162,12 +203,12 @@ class PilotGitAgent:
                     f"The patch changed {touched}, but the agent declared {declared}."
                 )
 
-            identity = ["-c", f"user.name={AGENT_NAME}", "-c", f"user.email={AGENT_EMAIL}"]
+            identity = commit_identity(branch)
 
             self._git("add", "--", *declared)
             self._git(
                 *identity, "commit", "-m", f"[{task_id}] {summary}",
-                "-m", "Proposed by the Backend Developer Agent. Not approved yet: waiting for tests and the H3 decision.",
+                "-m", f"Proposed by the {AGENT_ROLES[role]['title']}. Not approved yet: waiting for tests and the H3 decision.",
             )
             code_commit = self._git("rev-parse", "--short", "HEAD").stdout.strip()
             state["committed"] = True
@@ -246,11 +287,11 @@ class PilotGitAgent:
             if touched != declared:
                 raise PilotGitError(f"The fix changed {touched}, but the agent declared {declared}.")
 
-            identity = ["-c", f"user.name={AGENT_NAME}", "-c", f"user.email={AGENT_EMAIL}"]
+            title = AGENT_ROLES[branch_role(branch)]["title"]
             self._git("add", "--", *declared)
             self._git(
-                *identity, "commit", "-m", f"[{task_id}] Fix: {summary}",
-                "-m", "Proposed by the Backend Developer Agent after failing tests (correction loop). Not approved yet: waiting for the H3 decision.",
+                *commit_identity(branch), "commit", "-m", f"[{task_id}] Fix: {summary}",
+                "-m", f"Proposed by the {title} after failing tests (correction loop). Not approved yet: waiting for the H3 decision.",
             )
             code_commit = self._git("rev-parse", "--short", "HEAD").stdout.strip()
             state["committed"] = True
@@ -293,9 +334,8 @@ class PilotGitAgent:
             raise PilotGitError("Commit all records before merging.")
 
         self._git("switch", BASE_BRANCH)
-        identity = ["-c", f"user.name={AGENT_NAME}", "-c", f"user.email={AGENT_EMAIL}"]
         merged = self._git(
-            *identity, "merge", "--no-ff", branch,
+            *commit_identity(branch), "merge", "--no-ff", branch,
             "-m", f"[{task_id}] Merge {branch} after the human's H3 approval",
             check=False,
         )
@@ -325,15 +365,14 @@ class PilotGitAgent:
 
     def commit_records(self, task_id, record_paths, message):
         """Commit run records (reports, proposals) on the current agent branch."""
-        self.current_agent_branch()
+        branch = self.current_agent_branch()
         records = [self._relative(path) for path in record_paths]
         to_commit = [path for path in records if path in self._changed_paths()]
         if not to_commit:
             return None
 
-        identity = ["-c", f"user.name={AGENT_NAME}", "-c", f"user.email={AGENT_EMAIL}"]
         self._git("add", "--", *to_commit)
-        self._git(*identity, "commit", "-m", f"[{task_id}] {message}")
+        self._git(*commit_identity(branch), "commit", "-m", f"[{task_id}] {message}")
         return self._git("rev-parse", "--short", "HEAD").stdout.strip()
 
     def _undo_branch(self, branch, patch_path, state):

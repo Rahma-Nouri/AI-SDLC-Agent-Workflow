@@ -19,31 +19,43 @@ from pathlib import Path, PurePosixPath
 
 from agents.correction_loop import CorrectionLoopReport, run_revision
 from agents.issue_sync_agent import PILOT_LABEL, label_names, read_marker
+from agents.pilot_git_agent import branch_role
 
 TIMESTAMP = re.compile(r"_(\d{8}_\d{6}_\d{6})\.json$")
 
-# <task>_backend_<timestamp>_report.json is the first patch of an attempt;
-# a label such as fix1_ or revise1_ before the timestamp marks a later change.
-AGENT_REPORT = re.compile(r"_backend_(?P<label>[a-z]+\d+_)?(?P<timestamp>\d{8}_\d{6}_\d{6})_report\.json$")
+# <task>_<role>_<timestamp>_report.json is the first patch of an attempt (role =
+# backend or frontend); a label such as fix1_ or revise1_ before the timestamp
+# marks a later change.
+AGENT_REPORT = re.compile(
+    r"_(?P<role>backend|frontend)_(?P<label>[a-z]+\d+_)?(?P<timestamp>\d{8}_\d{6}_\d{6})_report\.json$"
+)
 
 
-def latest_test_report(pilot_root):
-    """The newest test report (loop, re-test or revision) on the branch."""
+def latest_test_report(pilot_root, branch_files=None):
+    """The newest test report (loop, re-test or revision) on the branch.
+
+    branch_files: the report files the branch itself added. Reports of tasks
+    merged earlier stay in the folder, so without this list a branch with no
+    tests of its own would show another task's result as its evidence.
+    """
     folder = Path(pilot_root) / "outputs" / "test_results"
     reports = [path for path in folder.glob("*.json") if TIMESTAMP.search(path.name)] if folder.is_dir() else []
+    if branch_files is not None:
+        own_names = {PurePosixPath(path).name for path in branch_files}
+        reports = [path for path in reports if path.name in own_names]
     if not reports:
         return None
     newest = max(reports, key=lambda path: TIMESTAMP.search(path.name).group(1))
     return CorrectionLoopReport.model_validate_json(newest.read_text(encoding="utf-8"))
 
 
-def agent_reports_on_branch(git_agent, pilot_root, task_id):
-    """The Backend Agent's reports for this task and attempt, oldest first."""
+def agent_reports_on_branch(git_agent, pilot_root, task_id, role="backend"):
+    """The reports of this role's agent for this task and attempt, oldest first."""
     found = []
     for path in git_agent.files_added_on_branch("outputs/proposed_changes/"):
         name = PurePosixPath(path).name
         match = AGENT_REPORT.search(name)
-        if match and name.startswith(f"{task_id}_backend_") and (Path(pilot_root) / path).is_file():
+        if match and name.startswith(f"{task_id}_{role}_") and (Path(pilot_root) / path).is_file():
             found.append((match["timestamp"], match["label"], name, path))
     found.sort(key=lambda item: item[0])
 
@@ -180,8 +192,9 @@ def run_h3_review(
     task_id = task["task_id"]
     summary = git_agent.branch_summary()
     branch = summary["branch"]
-    report = latest_test_report(pilot_root)
-    show_review(task, summary, report, agent_reports_on_branch(git_agent, pilot_root, task_id))
+    role = branch_role(branch)
+    report = latest_test_report(pilot_root, git_agent.files_added_on_branch("outputs/test_results/"))
+    show_review(task, summary, report, agent_reports_on_branch(git_agent, pilot_root, task_id, role))
 
     decision = ask_choice(ask, "Enter 'approve', 'revise', or 'reject': ", ("approve", "revise", "reject"))
     tests_passed = report is not None and report.final_result == "passed"
@@ -241,7 +254,7 @@ def run_h3_review(
     # revise
     feedback = ""
     while not feedback:
-        feedback = ask("Your feedback for the Backend Agent: ").strip()
+        feedback = ask(f"Your feedback for the {role.title()} Agent: ").strip()
     tests_may_change = ask_choice(
         ask, "May the agent change test files for this revision? (yes/no): ", ("yes", "no")
     ) == "yes"

@@ -5,15 +5,24 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from agents.agent_contracts import BackendDeveloperResult
+from pydantic import ValidationError
+
+from agents.agent_contracts import BackendDeveloperResult, FrontendDeveloperResult, UiStackProposal
 from agents.backend_developer import BackendDeveloperAgent
 from agents.correction_loop import run_correction_loop
+from agents.frontend_developer import (
+    GENERATED_FOLDERS,
+    GITIGNORE,
+    UI_TASKS,
+    FrontendDeveloperAgent,
+    ui_architecture_context,
+)
 from agents.h2b_ui_stack import run_h2b_review
 from agents.h3_review import run_h3_review
 from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
 from agents.pilot_environment import PilotEnvironment
-from agents.pilot_git_agent import PilotGitAgent, PilotGitError
+from agents.pilot_git_agent import PilotGitAgent, PilotGitError, branch_role, branch_task_id
 from agents.software_architect import SoftwareArchitectAgent
 from agents.testing_workflow import run_task_tests
 from agents.ticket_quality_checker import TicketQualityChecker
@@ -124,6 +133,46 @@ def collect_backend_file_context(project_root):
     }
 
 
+
+
+def collect_frontend_file_context(project_root, frontend_folder):
+    """Collect exact baselines for the files the frontend agent may change."""
+
+    project_root = Path(project_root)
+    candidates = []
+
+    frontend_root = project_root / frontend_folder
+    if frontend_root.is_symlink():
+        raise ValueError("The frontend folder cannot be a symlink.")
+
+    if frontend_root.is_dir():
+        for path in frontend_root.rglob("*"):
+            if GENERATED_FOLDERS & set(path.relative_to(frontend_root).parts):
+                continue
+            if path.is_symlink():
+                raise ValueError(f"Symlink found in frontend source snapshot: {path}")
+            if path.is_file():
+                candidates.append(path)
+
+    # The baseline of .gitignore is needed too: without it, a change to this
+    # file would look like a new file and the patch would not apply.
+    gitignore_path = project_root / GITIGNORE
+    if gitignore_path.is_file() and not gitignore_path.is_symlink():
+        candidates.append(gitignore_path)
+
+    existing_files = {}
+
+    for path in sorted(candidates):
+        try:
+            existing_files[path.relative_to(project_root).as_posix()] = read_text_file(path)
+        except UnicodeDecodeError:
+            continue  # An image or other binary file: the agent writes text only.
+
+    return {
+        "existing_files": existing_files,
+        "existing_file_paths": sorted(existing_files),
+        "existing_files_complete": True,
+    }
 
 
 def print_ticket_quality_report(report, tasks):
@@ -367,15 +416,15 @@ def create_t1_backend_patch(
     return save_patch_proposal(result, output_dir)
 
 
-def save_patch_proposal(result, output_dir, label=""):
+def save_patch_proposal(result, output_dir, label="", role="backend"):
     """Save an agent's patch and report; label marks fixes, e.g. "fix1_"."""
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    patch_path = output_dir / f"{result.task_id}_backend_{label}{timestamp}.patch"
-    report_path = output_dir / f"{result.task_id}_backend_{label}{timestamp}_report.json"
+    patch_path = output_dir / f"{result.task_id}_{role}_{label}{timestamp}.patch"
+    report_path = output_dir / f"{result.task_id}_{role}_{label}{timestamp}_report.json"
 
     # Write the patch with LF ("\n") line endings on every operating system.
     # Without newline="\n", Windows text mode turns each "\n" into "\r\n",
@@ -799,8 +848,7 @@ def run_retest_agent_branch(project_root, orchestrator, git_agent=None, environm
         print(f"\nNothing to re-test: {error}")
         return None
 
-    # agent/T1-attempt-1 -> T1
-    task_id = branch[len("agent/"):].split("-attempt-")[0]
+    task_id = branch_task_id(branch)
     task = next((item for item in snapshot["tasks"] if item.get("task_id") == task_id), None)
     if task is None:
         print(f"\nTask {task_id} of branch {branch} is not in the approved backlog.")
@@ -833,7 +881,7 @@ def short_subject(summary, limit=72):
     return first if len(first) <= limit else first[: limit - 3].rstrip() + "..."
 
 
-def apply_patch_with_pilot_git_agent(project_root, patch_path, report_path, record_paths, git_agent=None):
+def apply_patch_with_pilot_git_agent(project_root, patch_path, report_path, record_paths, git_agent=None, role="backend"):
     """Let the Pilot Git Agent commit the proposal on a new agent/ branch.
 
     Returns the AgentCommitResult, or None when the step could not run; the
@@ -852,6 +900,7 @@ def apply_patch_with_pilot_git_agent(project_root, patch_path, report_path, reco
             changed_files=[item["path"] for item in report["changed_files"]],
             summary=short_subject(report["summary"]),
             record_paths=record_paths,
+            role=role,
         )
     except Exception as error:
         print(f"\nThe Pilot Git Agent could not apply the patch: {error}")
@@ -1036,6 +1085,103 @@ def run_h2b_ui_stack_command(project_root, orchestrator, architect=None, ask=inp
     )
 
 
+def read_ui_stack(snapshot):
+    """The approved UI stack of the snapshot, or None (the reason is printed)."""
+
+    try:
+        return UiStackProposal.model_validate(snapshot.get("ui_stack"))
+    except ValidationError:
+        print("\nThe approved snapshot has no valid UI stack.")
+        print("Approve one first with: python main.py --h2b-ui-stack")
+        return None
+
+
+def build_frontend_project_context(project_root, ui_stack):
+    """What the Frontend Agent sees: the approved stack plus its current files."""
+
+    return {
+        "ui_stack": ui_stack.model_dump(),
+        **collect_frontend_file_context(project_root, ui_stack.frontend_folder),
+    }
+
+
+def run_frontend_patch(project_root, orchestrator, task_id, agent=None, git_agent=None):
+    """One UI patch: checks -> agent proposal -> agent commit on its own branch."""
+
+    project_root = Path(project_root)
+
+    if task_id not in UI_TASKS:
+        print(f"\n{task_id} has no UI work. UI tasks: {', '.join(UI_TASKS)}.")
+        return None
+
+    snapshot_path = project_root / "outputs" / "approved_context" / "current_approved_context.json"
+
+    try:
+        snapshot = load_approved_context(snapshot_path)
+    except ValueError as error:
+        print(f"\nThe frontend patch needs an approved snapshot: {error}")
+        return None
+
+    ui_stack = read_ui_stack(snapshot)
+    if ui_stack is None:
+        return None
+
+    git_agent = git_agent or PilotGitAgent(project_root, workflow_root=Path(__file__).resolve().parent)
+
+    # Check the workspace first: a Gemini request must not be spent on a
+    # patch that could not be committed anyway.
+    try:
+        git_agent.ensure_ready()
+    except PilotGitError as error:
+        print(f"\nThe pilot workspace is not ready: {error}")
+        return None
+
+    approved = request_fresh_approvals(project_root, orchestrator, next_step="the frontend patch")
+    if approved is None:
+        return None
+
+    snapshot, architecture = approved
+    task = next((item for item in snapshot["tasks"] if item.get("task_id") == task_id), None)
+    if task is None:
+        print(f"\nTask {task_id} is not in the approved backlog.")
+        return None
+
+    try:
+        work_package = orchestrator.delegate_task(
+            task,
+            architecture=ui_architecture_context(architecture, task_id),
+            project_context=build_frontend_project_context(project_root, ui_stack),
+        )
+        result = (agent or FrontendDeveloperAgent()).create_patch(work_package)
+        if not isinstance(result, FrontendDeveloperResult):
+            raise TypeError("The Frontend Developer Agent must return a FrontendDeveloperResult.")
+        patch_path, report_path = save_patch_proposal(
+            result, project_root / "outputs" / "proposed_changes", role="frontend"
+        )
+    except Exception as error:
+        print(f"\nFrontend patch generation failed: {error}")
+        print("No agent branch was created.")
+        return None
+
+    print("\nPatch proposal created.")
+    print(f"Patch:  {patch_path}")
+    print(f"Report: {report_path}")
+
+    agent_commit = apply_patch_with_pilot_git_agent(
+        project_root=project_root,
+        patch_path=patch_path,
+        report_path=report_path,
+        record_paths=[patch_path, report_path],
+        git_agent=git_agent,
+        role="frontend",
+    )
+
+    if agent_commit is not None:
+        print("Frontend tests are added in P2.2c; the branch waits for H3.")
+
+    return {"patch_path": patch_path, "report_path": report_path, "agent_commit": agent_commit}
+
+
 def run_h3_review_command(
     project_root, orchestrator, git_agent=None, environment=None, backend_agent=None, github_client=None, ask=input
 ):
@@ -1054,11 +1200,28 @@ def run_h3_review_command(
         print(f"\nNothing to review: {error}")
         return None
 
-    task_id = branch[len("agent/"):].split("-attempt-")[0]
+    task_id = branch_task_id(branch)
     task = next((item for item in snapshot["tasks"] if item.get("task_id") == task_id), None)
     if task is None:
         print(f"\nTask {task_id} of branch {branch} is not in the approved backlog.")
         return None
+
+    # An H3 "revise" must go back to the agent that owns the branch.
+    role = branch_role(branch)
+    backend_agent_factory = lambda: backend_agent or BackendDeveloperAgent()
+    build_project_context = build_pilot_project_context
+
+    if role == "frontend":
+        ui_stack = read_ui_stack(snapshot)
+        if ui_stack is None:
+            return None
+        try:
+            architecture = ui_architecture_context(architecture, task_id)
+        except ValueError as error:
+            print(f"\nCould not prepare the UI context: {error}")
+            return None
+        backend_agent_factory = lambda: backend_agent or FrontendDeveloperAgent()
+        build_project_context = lambda root: build_frontend_project_context(root, ui_stack)
 
     if github_client is None:
         try:
@@ -1073,11 +1236,11 @@ def run_h3_review_command(
         pilot_root=project_root,
         git_agent=git_agent,
         environment=environment or PilotEnvironment(project_root),
-        backend_agent_factory=lambda: backend_agent or BackendDeveloperAgent(),
+        backend_agent_factory=backend_agent_factory,
         github=github_client,
-        build_project_context=build_pilot_project_context,
+        build_project_context=build_project_context,
         save_proposal=lambda result, label: save_patch_proposal(
-            result, project_root / "outputs" / "proposed_changes", label
+            result, project_root / "outputs" / "proposed_changes", label, role=role
         ),
         ask=ask,
     )
@@ -1109,6 +1272,11 @@ def main(argv=None):
         "--h2b-ui-stack",
         action="store_true",
         help="H2b: the Architect proposes the UI stack; approve, revise, or reject it.",
+    )
+    parser.add_argument(
+        "--frontend-patch",
+        metavar="TASK",
+        help="Let the Frontend Agent propose and commit a UI patch for this task, for example T7.",
     )
     parser.add_argument(
         "--h3-review",
@@ -1162,6 +1330,14 @@ def main(argv=None):
         run_h2b_ui_stack_command(
             project_root=project_root,
             orchestrator=orchestrator,
+        )
+        return
+
+    if args.frontend_patch:
+        run_frontend_patch(
+            project_root=project_root,
+            orchestrator=orchestrator,
+            task_id=args.frontend_patch,
         )
         return
 

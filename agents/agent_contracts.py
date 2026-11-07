@@ -58,6 +58,18 @@ class BackendDeveloperResult(ContractModel):
     unresolved_issues: list[str] = Field(default_factory=list)
 
 
+class FrontendDeveloperModelResponse(BackendDeveloperModelResponse):
+    """Same fields as the backend response; only the agent differs."""
+
+
+class FrontendDeveloperResult(BackendDeveloperResult):
+    """Same fields as the backend result.
+
+    Because it is a kind of BackendDeveloperResult, the steps that accept the
+    backend result (saving the proposal, H3) accept this one too.
+    """
+
+
 class TestCheckResult(ContractModel):
     # This Pydantic model is imported by tests, but is not itself a test class.
     __test__ = False
