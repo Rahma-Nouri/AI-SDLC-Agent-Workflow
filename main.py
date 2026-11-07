@@ -616,13 +616,11 @@ def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None):
     specification_path = (
         project_root / "pilot" / "pilot_specification.md"
     )
-    readme_path = project_root / "README.md"
     requirements_path = project_root / "requirements.txt"
 
     try:
         project_context = {
             "pilot_specification": read_text_file(specification_path),
-            "readme": read_text_file(readme_path),
             "requirements": read_text_file(requirements_path),
             "python_version": sys.version,
             "snapshot_saved_at": snapshot.get("saved_at", ""),
@@ -694,7 +692,6 @@ def build_pilot_project_context(project_root):
     project_root = Path(project_root)
     context = {
         "pilot_specification": read_text_file(project_root / "pilot" / "pilot_specification.md"),
-        "readme": read_text_file(project_root / "README.md"),
         "requirements": read_text_file(project_root / "requirements.txt"),
         "python_version": sys.version,
     }
@@ -1238,13 +1235,11 @@ def main(argv=None):
         print("No GitHub synchronization was performed.")
         return
 
-    readme_path = project_root / "README.md"
     requirements_path = project_root / "requirements.txt"
 
     try:
         project_context = {
             "pilot_specification": specification,
-            "readme": read_text_file(readme_path),
             "requirements": read_text_file(requirements_path),
             "python_version": sys.version,
         }

@@ -91,9 +91,9 @@ An **architecture slice** is only the part of the architecture that concerns one
 
 | Gap | Effect | Decision |
 |---|---|---|
-| (a) Spec cut at 3,000 characters | Backend Agent never sees the end of section 4 or sections 5–8 | **P2.1b now:** send the whole spec |
-| (b) Empty `readme` field sent | Wastes a field and suggests a document exists | **P2.1b now:** stop sending it |
-| (c) H3 does not show `unresolved_issues`, `assumptions` or criteria status | Human decides without the agent's own warnings | **P2.1b now:** show them at H3 |
+| (a) Spec cut at 3,000 characters | Backend Agent never sees the end of section 4 or sections 5–8 | **Fixed in P2.1b:** the whole spec is sent |
+| (b) Empty `readme` field sent | Wastes a field and suggests a document exists | **Fixed in P2.1b:** no longer sent |
+| (c) H3 does not show `unresolved_issues`, `assumptions` or criteria status | Human decides without the agent's own warnings | **Fixed in P2.1b:** shown at H3 |
 | No conventions file | Agents follow only hard-coded rules | Later: P2.5 (B1) |
 | H2 "revise" needs a manual edit | Breaks the rule that the human writes nothing | Later: P2.5 (the end-to-end run passes H2, and B1 needs an agent-based H2 revise) |
 | Code does not follow C1: agents use `pilot/architecture_design.md`; only `run_resume_patch` refreshes the snapshot | The two copies can drift apart | Later: P2.5 |

@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import sys
@@ -5,7 +6,7 @@ import sys
 import pytest
 
 from agents.correction_loop import CorrectionLoopReport, TestRunSummary
-from agents.h3_review import run_h3_review
+from agents.h3_review import run_h3_review, show_agent_reports
 from agents.pilot_environment import EnvironmentResult
 from agents.pilot_git_agent import AGENT_NAME, PilotGitAgent
 from test_correction_loop import (
@@ -79,6 +80,60 @@ def review(repo, answers, backend=None, github=None):
         save_proposal=save_proposal, ask=lambda _prompt: answers.pop(0),
     )
     return outcome, orchestrator
+
+
+def add_agent_report(repo, name, **fields):
+    """Commit one Backend Agent report on the agent branch."""
+    folder = repo / "outputs" / "proposed_changes"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_text(json.dumps({"task_id": name.split("_")[0], **fields}), encoding="utf-8", newline="\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", f"agent: {name}")
+
+
+def test_h3_shows_the_agent_reports_of_this_attempt_only(tmp_path, capsys):
+    repo, _ = make_review_setup(tmp_path, FIXED, tests_passed=True)
+    add_agent_report(repo, "T1_backend_20261102_100000_000000_report.json", unresolved_issues=["Earlier failed attempt"])
+    add_agent_report(
+        repo, "T1_backend_20261102_110000_000000_report.json",
+        unresolved_issues=["Open problem"], assumptions=["Uses SQLite"],
+        acceptance_criteria=[{"criterion": "Adds numbers", "status": "addressed", "evidence": "first"}],
+    )
+    add_agent_report(
+        repo, "T1_backend_fix1_20261102_120000_000000_report.json",
+        unresolved_issues=["Open problem", "New problem"],
+        acceptance_criteria=[{"criterion": "Adds numbers", "status": "not_addressed", "evidence": "fix"}],
+    )
+    add_agent_report(repo, "T2_backend_20261102_130000_000000_report.json", unresolved_issues=["Other task"])
+
+    review(repo, ["reject", "test"], github=FakeGitHub())
+    screen = capsys.readouterr().out
+
+    assert screen.count("Open problem") == 1  # in two reports, shown once
+    assert "New problem" in screen
+    assert "Uses SQLite" in screen
+    assert "[not_addressed] Adds numbers" in screen  # the newest status counts
+    assert "[addressed] Adds numbers" not in screen
+    assert "Other task" not in screen
+    assert "Earlier failed attempt" not in screen
+
+
+def test_h3_prints_none_reported_for_missing_fields(tmp_path, capsys):
+    repo, _ = make_review_setup(tmp_path, FIXED, tests_passed=True)
+    add_agent_report(repo, "T1_backend_20261102_110000_000000_report.json")
+
+    review(repo, ["reject", "test"], github=FakeGitHub())
+    screen = capsys.readouterr().out
+
+    assert "Unresolved issues: none reported" in screen
+    assert "Assumptions: none reported" in screen
+    assert "Acceptance criteria (newest report): none reported" in screen
+
+
+def test_h3_prints_none_reported_without_any_report(capsys):
+    show_agent_reports([])
+
+    assert capsys.readouterr().out.count("none reported") == 3
 
 
 def test_approve_merges_into_pilot_main_and_pushes(tmp_path):

@@ -24,13 +24,17 @@ class BackendDeveloperAgent:
     MAX_API_ATTEMPTS = 3
 
     CONTEXT_FIELD_LIMITS = {
-        "pilot_specification": 3000,
         "readme": 3000,
         "requirements": 8000,
         "python_version": 200,
         "snapshot_saved_at": 200,
     }
     DEFAULT_CONTEXT_FIELD_LIMIT = 2000
+
+    # Never cut these fields. With half of the requirements, the agent would
+    # have to guess the rest. (A field with no limit of its own gets the default
+    # limit above, so deleting its entry from the list would not be enough.)
+    UNCUT_CONTEXT_FIELDS = {"pilot_specification"}
 
     DIFF_HEADER_PATTERN = re.compile(r"^diff --git a/(.+) b/(.+)$")
     HUNK_HEADER_PATTERN = re.compile(
@@ -196,7 +200,7 @@ class BackendDeveloperAgent:
         compacted = {}
 
         for key, value in project_context.items():
-            if isinstance(value, str):
+            if isinstance(value, str) and key not in cls.UNCUT_CONTEXT_FIELDS:
                 limit = cls.CONTEXT_FIELD_LIMITS.get(
                     key,
                     cls.DEFAULT_CONTEXT_FIELD_LIMIT,

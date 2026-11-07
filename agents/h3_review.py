@@ -15,12 +15,16 @@ decisions stay traceable in Git, not only in memory.
 import json
 import re
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from agents.correction_loop import CorrectionLoopReport, run_revision
 from agents.issue_sync_agent import PILOT_LABEL, label_names, read_marker
 
 TIMESTAMP = re.compile(r"_(\d{8}_\d{6}_\d{6})\.json$")
+
+# <task>_backend_<timestamp>_report.json is the first patch of an attempt;
+# a label such as fix1_ or revise1_ before the timestamp marks a later change.
+AGENT_REPORT = re.compile(r"_backend_(?P<label>[a-z]+\d+_)?(?P<timestamp>\d{8}_\d{6}_\d{6})_report\.json$")
 
 
 def latest_test_report(pilot_root):
@@ -31,6 +35,30 @@ def latest_test_report(pilot_root):
         return None
     newest = max(reports, key=lambda path: TIMESTAMP.search(path.name).group(1))
     return CorrectionLoopReport.model_validate_json(newest.read_text(encoding="utf-8"))
+
+
+def agent_reports_on_branch(git_agent, pilot_root, task_id):
+    """The Backend Agent's reports for this task and attempt, oldest first."""
+    found = []
+    for path in git_agent.files_added_on_branch("outputs/proposed_changes/"):
+        name = PurePosixPath(path).name
+        match = AGENT_REPORT.search(name)
+        if match and name.startswith(f"{task_id}_backend_") and (Path(pilot_root) / path).is_file():
+            found.append((match["timestamp"], match["label"], name, path))
+    found.sort(key=lambda item: item[0])
+
+    # A branch also keeps the records of earlier failed attempts as evidence.
+    # This attempt starts at its newest first patch, so skip what came before it.
+    first_patches = [index for index, item in enumerate(found) if item[1] is None]
+    if first_patches:
+        found = found[first_patches[-1]:]
+
+    reports = []
+    for _timestamp, _label, name, path in found:
+        data = json.loads((Path(pilot_root) / path).read_text(encoding="utf-8"))
+        if data.get("task_id") == task_id:
+            reports.append({**data, "file_name": name})
+    return reports
 
 
 def write_decision_record(pilot_root, task_id, payload):
@@ -76,7 +104,33 @@ def ask_choice(ask, prompt, choices):
         print(f"Please enter one of: {', '.join(choices)}")
 
 
-def show_review(task, summary, report):
+def print_report_list(title, items):
+    if not items:
+        print(f"  {title}: none reported")
+        return
+    print(f"  {title}:")
+    for item in items:
+        print(f"  - {item}")
+
+
+def show_agent_reports(reports):
+    """What the agent itself said: open problems, assumptions, criteria status."""
+    print("\nAgent's own report (its claims, not test evidence):")
+    print("  From: " + (", ".join(report["file_name"] for report in reports) or "no report found on this branch"))
+
+    # Problems can be mentioned in any report, so collect them all (without
+    # repeats). Criteria status changes over time, so only the newest one counts.
+    for title, field in (("Unresolved issues", "unresolved_issues"), ("Assumptions", "assumptions")):
+        print_report_list(title, list(dict.fromkeys(item for report in reports for item in report.get(field) or [])))
+
+    criteria = (reports[-1].get("acceptance_criteria") or []) if reports else []
+    print_report_list(
+        "Acceptance criteria (newest report)",
+        [f"[{item.get('status', 'none reported')}] {item.get('criterion', 'none reported')}" for item in criteria],
+    )
+
+
+def show_review(task, summary, report, agent_reports=()):
     print("\n" + "=" * 70)
     print("H3 - HUMAN REVIEW: IMPLEMENTATION AND TEST EVIDENCE")
     print("=" * 70)
@@ -103,6 +157,7 @@ def show_review(task, summary, report):
         if report.runs and not report.runs[-1].passed:
             print("  End of the last test output:")
             print("  " + report.runs[-1].output_tail[-1200:].replace("\n", "\n  "))
+    show_agent_reports(list(agent_reports))
     print("=" * 70)
 
 
@@ -126,7 +181,7 @@ def run_h3_review(
     summary = git_agent.branch_summary()
     branch = summary["branch"]
     report = latest_test_report(pilot_root)
-    show_review(task, summary, report)
+    show_review(task, summary, report, agent_reports_on_branch(git_agent, pilot_root, task_id))
 
     decision = ask_choice(ask, "Enter 'approve', 'revise', or 'reject': ", ("approve", "revise", "reject"))
     tests_passed = report is not None and report.final_result == "passed"

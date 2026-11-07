@@ -151,3 +151,4 @@ def test_patch_generation_requires_both_approvals(
     assert orchestrator.workflow_state["architecture_approved"] is True
     assert patch_calls[0]["tasks"] == snapshot["tasks"]
     assert patch_calls[0]["architecture"] == snapshot["architecture"]
+    assert "readme" not in patch_calls[0]["project_context"]
