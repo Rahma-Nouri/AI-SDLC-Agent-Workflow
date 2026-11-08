@@ -1,0 +1,351 @@
+--- /dev/null
++++ b/pilot/app/backend/parser.py
+@@ -0,0 +1,241 @@
++import io
++import re
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Dict, List, Optional, Union
++
++try:
++    import pypdf
++    from pypdf.errors import PdfReadError
++    HAVE_PYPDF = True
++except ImportError:
++    pypdf = None
++    PdfReadError = Exception
++    HAVE_PYPDF = False
++
++
++class DocumentParsingError(Exception):
++    """Base exception raised when document extraction fails."""
++    pass
++
++
++class CorruptedDocumentError(DocumentParsingError):
++    """Raised when the document file format is invalid, empty, or unreadable."""
++    pass
++
++
++class UnsupportedFormatError(DocumentParsingError):
++    """Raised when the document format or extension is unsupported."""
++    pass
++
++
++@dataclass
++class ExtractionResult:
++    text: str
++    page_count: int
++    char_count: int
++    metadata: Dict[str, str] = field(default_factory=dict)
++    layout_detected: str = "single_column"
++    warnings: List[str] = field(default_factory=list)
++
++
++class DocumentParser:
++    """
++    Parser responsible for extracting clean unstructured and structured text
++    from academic files (PDFs, TXT, MD) while preventing layout or structural corruption.
++    """
++
++    def __init__(self, prefer_column_detection: bool = True):
++        self.prefer_column_detection = prefer_column_detection
++
++    def parse(self, source: Union[str, Path, bytes, io.BytesIO], filename_hint: Optional[str] = None) -> ExtractionResult:
++        """
++        Parses a document source (file path, raw bytes, or stream) and returns an ExtractionResult.
++        """
++        stream: io.BytesIO
++        filename = filename_hint or ""
++
++        if isinstance(source, (str, Path)):
++            p = Path(source)
++            filename = filename or p.name
++            if not p.exists():
++                raise CorruptedDocumentError(f"File not found: {source}")
++            if p.stat().st_size == 0:
++                raise CorruptedDocumentError(f"Document is empty (0 bytes): {source}")
++            try:
++                with open(p, "rb") as f:
++                    stream = io.BytesIO(f.read())
++            except Exception as e:
++                raise CorruptedDocumentError(f"Unable to read source file: {e}") from e
++        elif isinstance(source, bytes):
++            if len(source) == 0:
++                raise CorruptedDocumentError("Document content is empty.")
++            stream = io.BytesIO(source)
++        elif isinstance(source, io.BytesIO):
++            data = source.getvalue()
++            if len(data) == 0:
++                raise CorruptedDocumentError("Document stream is empty.")
++            stream = io.BytesIO(data)
++        else:
++            raise UnsupportedFormatError(f"Unsupported source type: {type(source)}")
++
++        # Format detection
++        header = stream.getvalue()[:10]
++        is_pdf = header.startswith(b"%PDF-") or filename.lower().endswith(".pdf")
++        is_text = filename.lower().endswith((".txt", ".text", ".md")) or not is_pdf
++
++        if is_pdf:
++            return self._parse_pdf(stream)
++        elif is_text:
++            return self._parse_text(stream)
++        else:
++            raise UnsupportedFormatError(f"Unable to determine parser for document: {filename}")
++
++    def _parse_pdf(self, stream: io.BytesIO) -> ExtractionResult:
++        if not HAVE_PYPDF:
++            # Minimal fallback for mock PDF or environments missing pypdf
++            raw_bytes = stream.getvalue()
++            if not raw_bytes.startswith(b"%PDF-"):
++                raise CorruptedDocumentError("Invalid PDF header.")
++            extracted = self._extract_text_stream_simple(raw_bytes)
++            if not extracted.strip():
++                raise CorruptedDocumentError("PDF stream contains no readable text or is corrupted.")
++            return ExtractionResult(
++                text=extracted,
++                page_count=1,
++                char_count=len(extracted),
++                layout_detected="unknown"
++            )
++
++        try:
++            stream.seek(0)
++            reader = pypdf.PdfReader(stream)
++        except Exception as e:
++            raise CorruptedDocumentError(f"Failed to parse PDF document: {e}") from e
++
++        if reader.is_encrypted:
++            try:
++                reader.decrypt("")
++            except Exception as e:
++                raise CorruptedDocumentError("PDF is encrypted and password was not provided.") from e
++
++        pages = reader.pages
++        if len(pages) == 0:
++            raise CorruptedDocumentError("PDF contains no pages.")
++
++        extracted_pages: List[str] = []
++        detected_layout = "single_column"
++        warnings = []
++
++        for page_idx, page in enumerate(pages):
++            try:
++                page_text = page.extract_text(extraction_mode="layout") if hasattr(page, "extract_text") else ""
++            except Exception:
++                try:
++                    page_text = page.extract_text() if hasattr(page, "extract_text") else ""
++                except Exception as err:
++                    warnings.append(f"Page {page_idx + 1} extraction warning: {err}")
++                    page_text = ""
++
++            cleaned_page = self._normalize_page_layout(page_text)
++            if cleaned_page:
++                extracted_pages.append(cleaned_page)
++
++        full_text = "\n\n".join(extracted_pages).strip()
++        if not full_text:
++            raise CorruptedDocumentError("PDF contains no extractable text content.")
++
++        # Layout heuristic: detect multi-column flow
++        if any("    " in line and len(line.split("    ")) >= 2 for line in full_text.splitlines()[:50]):
++            detected_layout = "multi_column"
++
++        metadata = {}
++        if reader.metadata:
++            for k, v in reader.metadata.items():
++                if isinstance(v, str):
++                    metadata[str(k).replace("/", "")] = v
++
++        return ExtractionResult(
++            text=full_text,
++            page_count=len(pages),
++            char_count=len(full_text),
++            metadata=metadata,
++            layout_detected=detected_layout,
++            warnings=warnings
++        )
++
++    def _parse_text(self, stream: io.BytesIO) -> ExtractionResult:
++        raw = stream.getvalue()
++        for encoding in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
++            try:
++                text = raw.decode(encoding)
++                break
++            except UnicodeDecodeError:
++                continue
++        else:
++            raise CorruptedDocumentError("Text document encoding could not be determined.")
++
++        cleaned = self._clean_text(text)
++        if not cleaned:
++            raise CorruptedDocumentError("Document contains only whitespace or unprintable characters.")
++
++        return ExtractionResult(
++            text=cleaned,
++            page_count=1,
++            char_count=len(cleaned),
++            layout_detected="plain_text"
++        )
++
++    def _extract_text_stream_simple(self, raw_bytes: bytes) -> str:
++        """Basic stream reader when external pypdf engine is absent."""
++        matches = re.findall(rb"\((.*?)\)\s*Tj", raw_bytes)
++        if matches:
++            return " ".join(m.decode("latin-1", errors="ignore") for m in matches)
++        # Fallback to general printable tokens
++        clean_chars = [chr(b) for b in raw_bytes if 32 <= b <= 126 or b in (10, 13, 9)]
++        return "".join(clean_chars)
++
++    def _normalize_page_layout(self, text: str) -> str:
++        if not text:
++            return ""
++        lines = [line.rstrip() for line in text.splitlines()]
++        # Remove repetitive empty lines
++        normalized = []
++        consecutive_empty = 0
++        for line in lines:
++            if not line.strip():
++                consecutive_empty += 1
++                if consecutive_empty <= 1:
++                    normalized.append("")
++            else:
++                consecutive_empty = 0
++                normalized.append(line)
++        return "\n".join(normalized)
++
++    def _clean_text(self, text: str) -> str:
++        text = text.replace("\r\n", "\n").replace("\r", "\n")
++        return text.strip()
++
++
++def benchmark_extraction(sample_documents: Dict[str, Union[bytes, str]]) -> Dict[str, Dict[str, Union[float, int, str]]]:
++    """
++    Benchmarks parser against sample exam documents, verifying extraction fidelity
++    and character throughput.
++    """
++    import time
++    parser = DocumentParser()
++    benchmark_results = {}
++
++    for doc_name, content in sample_documents.items():
++        start_time = time.perf_counter()
++        result = parser.parse(content, filename_hint=doc_name)
++        duration = time.perf_counter() - start_time
++        benchmark_results[doc_name] = {
++            "duration_seconds": round(duration, 5),
++            "char_count": result.char_count,
++            "page_count": result.page_count,
++            "layout": result.layout_detected,
++            "chars_per_sec": round(result.char_count / max(duration, 0.0001), 2)
++        }
++
++    return benchmark_results
+--- /dev/null
++++ b/tests/test_backend_parser.py
+@@ -0,0 +1,104 @@
++import io
++import os
++import tempfile
++import unittest
++from pathlib import Path
++from pilot.app.backend.parser import (
++    DocumentParser,
++    CorruptedDocumentError,
++    UnsupportedFormatError,
++    benchmark_extraction
++)
++
++
++def create_mock_pdf_bytes(text_lines):
++    """Creates a minimal valid PDF-1.4 file byte stream with text operators."""
++    stream_content = "BT\n/F1 12 Tf\n"
++    y = 750
++    for line in text_lines:
++        stream_content += f"1 0 0 1 50 {y} Tm\n({line}) Tj\n"
++        y -= 20
++    stream_content += "ET\n"
++    stream_bytes = stream_content.encode("latin-1")
++    stream_len = len(stream_bytes)
++
++    pdf_template = (
++        b"%PDF-1.4\n"
++        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
++        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
++        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 612 792] /Contents 5 0 R >>\nendobj\n"
++        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
++        b"5 0 obj\n<< /Length " + str(stream_len).encode("ascii") + b" >>\nstream\n" +
++        stream_bytes +
++        b"\nendstream\nendobj\n"
++        b"xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000056 00000 n \n0000000111 00000 n \n0000000233 00000 n \n0000000300 00000 n \n"
++        b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n"
++        + str(400 + stream_len).encode("ascii") +
++        b"\n%%EOF\n"
++    )
++    return pdf_template
++
++
++class TestDocumentParser(unittest.TestCase):
++    def setUp(self):
++        self.parser = DocumentParser()
++
++    def test_plain_text_extraction(self):
++        content = "Question 1: What is polymorphism?\nA) Many forms\nB) One form\n"
++        result = self.parser.parse(content.encode("utf-8"), filename_hint="exam.txt")
++        self.assertIn("Question 1: What is polymorphism?", result.text)
++        self.assertEqual(result.layout_detected, "plain_text")
++        self.assertGreater(result.char_count, 0)
++        self.assertEqual(result.page_count, 1)
++
++    def test_structured_pdf_extraction(self):
++        lines = [
++            "Midterm Exam 2025: CS101",
++            "Question 1: Explain cache coherence.",
++            "Question 2: What is virtual memory?"
++        ]
++        pdf_bytes = create_mock_pdf_bytes(lines)
++        result = self.parser.parse(pdf_bytes, filename_hint="midterm.pdf")
++        self.assertIn("Midterm Exam 2025: CS101", result.text)
++        self.assertIn("Question 1: Explain cache coherence.", result.text)
++        self.assertIn("Question 2: What is virtual memory?", result.text)
++        self.assertEqual(result.page_count, 1)
++
++    def test_multi_column_text_parsing(self):
++        two_column_doc = (
++            "Left Column Topic 1              Right Column Topic 2\n"
++            "Section A: Fundamentals          Section B: Architecture\n"
++            "Item 1: Instruction Set          Item 2: Pipelining Stages\n"
++        )
++        result = self.parser.parse(two_column_doc.encode("utf-8"), filename_hint="columns.txt")
++        self.assertIn("Left Column Topic 1", result.text)
++        self.assertIn("Right Column Topic 2", result.text)
++        self.assertEqual(result.layout_detected, "plain_text")
++
++    def test_corrupted_empty_document_raises_gracefully(self):
++        with self.assertRaises(CorruptedDocumentError):
++            self.parser.parse(b"", filename_hint="empty.pdf")
++
++    def test_corrupted_binary_header_raises_gracefully(self):
++        corrupted_content = b"%NOT_A_REAL_PDF_12345" + os.urandom(100)
++        with self.assertRaises(CorruptedDocumentError):
++            self.parser.parse(corrupted_content, filename_hint="corrupt.pdf")
++
++    def test_nonexistent_file_raises_gracefully(self):
++        with self.assertRaises(CorruptedDocumentError):
++            self.parser.parse("/nonexistent/path/to/missing_exam.pdf")
++
++    def test_benchmark_extraction(self):
++        docs = {
++            "exam_sample_1.txt": "Question 1: Define process scheduling.\nQuestion 2: Define thread.\n" * 10,
++            "exam_sample_2.pdf": create_mock_pdf_bytes(["Exam Paper Part A", "Question 1: OS Kernels"])
++        }
++        benchmarks = benchmark_extraction(docs)
++        self.assertIn("exam_sample_1.txt", benchmarks)
++        self.assertIn("exam_sample_2.pdf", benchmarks)
++        self.assertGreater(benchmarks["exam_sample_1.txt"]["chars_per_sec"], 0)
++        self.assertGreater(benchmarks["exam_sample_2.pdf"]["chars_per_sec"], 0)
++
++
++if __name__ == "__main__":
++    unittest.main()
