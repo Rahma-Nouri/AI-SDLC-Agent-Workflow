@@ -140,7 +140,7 @@ def test_approve_merges_into_pilot_main_and_pushes(tmp_path):
     repo, remote = make_review_setup(tmp_path, FIXED, tests_passed=True)
     github = FakeGitHub()
 
-    outcome, orchestrator = review(repo, ["approve", "Looks good"], github=github)
+    outcome, orchestrator = review(repo, ["approve", "Looks good", "no"], github=github)
 
     assert outcome["decision"] == "approve" and outcome["pushed"]
     assert git(repo, "branch", "--show-current") == "pilot/main"

@@ -46,6 +46,7 @@ The approved snapshot `outputs/approved_context/current_approved_context.json` (
 | P2.2b | `23ad374` | Frontend Developer Agent and `--frontend-patch <task>`: UI patch on `agent/<task>-frontend-attempt-N`, committed as "AI-SDLC Frontend Agent"; H3 handles frontend branches, and shows only test reports from the branch under review. Built and tested offline with a fake Gemini client; not yet run with real Gemini |
 | P2.2c | this change | Frontend environment (npm packages approved by the human when the list changes; registry packages only; `--ignore-scripts`) and Vitest runner; `--frontend-patch` now runs tests → one fix (frontend test files frozen) → tests; re-test and H3 revise use Vitest on frontend branches. Offline tests plus one real npm test; not yet run on the real pilot |
 | P2.5b-1 | this change | `--backend-patch <task>`: the Backend Agent works on any approved backend task (same chain as `--resume-patch`, branch `agent/<task>-attempt-N`); the legacy run (no flag) is blocked once an approved snapshot exists |
+| P2.6a | this change | Pilot board Status kept by the agents (task branch → In Progress, H3 reject → Todo, H3 approve → Done or In Progress after the human's "close the issue?" answer, saved in the approve record) and `--sync-pilot-board`; board problems only warn. Offline tests only: the current fine-grained token cannot access Projects v2 yet |
 
 ## 4. Real-Run Evidence
 

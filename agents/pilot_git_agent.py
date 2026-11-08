@@ -353,6 +353,11 @@ class PilotGitAgent:
             committed_files=declared,
         )
 
+    def files_on_base(self, prefix):
+        """Files under prefix that are committed on pilot/main (whatever branch is checked out)."""
+        output = self._git("ls-tree", "-r", "--name-only", BASE_BRANCH, "--", prefix).stdout
+        return sorted(line.strip() for line in output.splitlines() if line.strip())
+
     def files_added_on_branch(self, prefix="tests/"):
         """Files under prefix that the agent branch added or changed vs. the base."""
         output = self._git("diff", "--name-only", f"{BASE_BRANCH}...HEAD", "--", prefix).stdout

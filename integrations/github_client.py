@@ -31,6 +31,12 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
+        # The pilot board (GitHub Projects v2). By default: project 2 of the
+        # repository owner ("Pilot: Exam Preparation System").
+        self.project_owner = os.getenv("PILOT_PROJECT_OWNER") or self.repository.split("/")[0]
+        self.project_number = int(os.getenv("PILOT_PROJECT_NUMBER") or 2)
+        self._project = None  # filled on first use by _pilot_project()
+
     def test_connection(self):
         """Verify repository access without changing anything."""
         response = requests.get(
@@ -325,3 +331,117 @@ class GitHubClient:
         )
         response.raise_for_status()
         return response.json()
+
+    # --- the pilot board: GitHub Projects v2 (GraphQL API) -------------------
+
+    def _graphql(self, query, variables):
+        """Run one GraphQL request; any error from GitHub becomes a RuntimeError."""
+        response = requests.post(
+            "https://api.github.com/graphql",
+            headers=self.headers,
+            json={"query": query, "variables": variables},
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data.get("errors"):
+            messages = "; ".join(error.get("message", "unknown error") for error in data["errors"])
+            raise RuntimeError(f"GitHub GraphQL error: {messages}")
+        return data["data"]
+
+    def _pilot_project(self):
+        """The board's IDs, found by name (never hard-coded): project, Status field, options."""
+        if self._project is None:
+            data = self._graphql(
+                """
+                query($owner: String!, $number: Int!) {
+                  user(login: $owner) {
+                    projectV2(number: $number) {
+                      id
+                      field(name: "Status") {
+                        ... on ProjectV2SingleSelectField { id options { id name } }
+                      }
+                    }
+                  }
+                }
+                """,
+                {"owner": self.project_owner, "number": self.project_number},
+            )
+            project = (data.get("user") or {}).get("projectV2")
+            if not project or not project.get("field"):
+                raise RuntimeError(
+                    f"Project {self.project_number} of {self.project_owner} or its Status field was not found."
+                )
+            self._project = {
+                "id": project["id"],
+                "status_field": project["field"]["id"],
+                "options": {option["name"]: option["id"] for option in project["field"]["options"]},
+            }
+        return self._project
+
+    def _issue_on_board(self, number):
+        """(issue node ID, board item ID or None, current Status name or None)."""
+        project = self._pilot_project()
+        owner, name = self.repository.split("/")
+        data = self._graphql(
+            """
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                issue(number: $number) {
+                  id
+                  projectItems(first: 20) {
+                    nodes {
+                      id
+                      project { id }
+                      fieldValueByName(name: "Status") {
+                        ... on ProjectV2ItemFieldSingleSelectValue { name }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """,
+            {"owner": owner, "name": name, "number": number},
+        )
+        issue = data["repository"]["issue"]
+        for item in issue["projectItems"]["nodes"]:
+            if item["project"]["id"] == project["id"]:
+                status = (item.get("fieldValueByName") or {}).get("name")
+                return issue["id"], item["id"], status
+        return issue["id"], None, None
+
+    def issue_status(self, number):
+        """The issue's Status on the pilot board, or None (not on the board, or no Status)."""
+        return self._issue_on_board(number)[2]
+
+    def set_issue_status(self, number, status):
+        """Set the issue's Status on the pilot board; adds the issue to the board if missing."""
+        project = self._pilot_project()
+        if status not in project["options"]:
+            raise RuntimeError(f"The board has no Status option {status!r}; it has {sorted(project['options'])}.")
+
+        issue_id, item_id, _current = self._issue_on_board(number)
+        if item_id is None:
+            data = self._graphql(
+                """
+                mutation($project: ID!, $content: ID!) {
+                  addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } }
+                }
+                """,
+                {"project": project["id"], "content": issue_id},
+            )
+            item_id = data["addProjectV2ItemById"]["item"]["id"]
+
+        self._graphql(
+            """
+            mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $project, itemId: $item, fieldId: $field,
+                value: {singleSelectOptionId: $option}
+              }) { projectV2Item { id } }
+            }
+            """,
+            {"project": project["id"], "item": item_id, "field": project["status_field"],
+             "option": project["options"][status]},
+        )

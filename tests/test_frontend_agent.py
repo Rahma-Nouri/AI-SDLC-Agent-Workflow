@@ -481,7 +481,8 @@ def test_command_line_flag_runs_the_frontend_patch(tmp_path, monkeypatch):
     monkeypatch.setattr(workflow_main, "get_pilot_root", lambda _root: tmp_path)
     monkeypatch.setattr(workflow_main, "OrchestratorAgent", lambda: "orchestrator")
     monkeypatch.setattr(workflow_main, "run_frontend_patch", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(workflow_main, "optional_github_client", lambda: "github")
 
     workflow_main.main(["--frontend-patch", "T7"])
 
-    assert calls == [{"project_root": tmp_path, "orchestrator": "orchestrator", "task_id": "T7"}]
+    assert calls == [{"project_root": tmp_path, "orchestrator": "orchestrator", "task_id": "T7", "github": "github"}]

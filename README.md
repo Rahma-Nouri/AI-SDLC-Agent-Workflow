@@ -61,6 +61,7 @@ Run from the workflow folder with the virtual environment active:
 | `python main.py --h3-review` | H3 on the waiting agent branch, backend or frontend: approve / revise / reject | 0 (revise: 1) |
 | `python main.py --retest-agent-branch` | Re-runs the tests on the waiting agent branch (pytest, or Vitest on a frontend branch) | 0 |
 | `python main.py --sync-pilot-issues` | Fresh H1, then the Issue Sync Agent aligns the pilot's GitHub Issues with the approved backlog (shows its plan first) | 0 |
+| `python main.py --sync-pilot-board` | Sets the pilot board Status from the facts (closed → Done; open with an H3 approve record on `pilot/main` → In Progress; else Todo); shows the plan, applies on "yes". The agents also update it themselves: new task branch → In Progress, H3 reject → Todo, H3 approve → Done if the human closes the issue, else In Progress. Board problems only warn | 0 |
 | `python main.py --run-t1-tests` | Early T1-only test command (from P1.3) | 0 |
 | `python main.py` | **Legacy full run:** regenerates the plan, backlog and architecture, **overwrites the official snapshot** (new task IDs), writes into the pilot workspace without an agent commit, then offers a patch. Not aligned with the two-worlds design yet; use only on purpose | several |
 

@@ -2,7 +2,9 @@
 
 The human only decides. The agents do the work:
 - approve: the Pilot Git Agent merges the agent branch into pilot/main and
-  pushes it; the pilot issue gets a comment.
+  pushes it; the pilot issue gets a comment. The human also says whether all
+  acceptance criteria are met: then the issue is closed (board: Done),
+  otherwise it stays open (board: In Progress).
 - revise:  the human's feedback goes to the Backend Agent, which changes the
   code on the same branch; the tests run again. Tests stay frozen unless the
   human explicitly allows test changes for this revision.
@@ -23,8 +25,15 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from agents.correction_loop import BACKEND_TESTS, CorrectionLoopReport, run_revision
-from agents.issue_sync_agent import PILOT_LABEL, label_names, read_marker
 from agents.output_validation import validate_files
+from agents.pilot_board import (
+    TODO,
+    approved_task_ids,
+    find_issue_safely,
+    find_pilot_issue,
+    finish_issue_after_approval,
+    set_task_status,
+)
 from agents.pilot_git_agent import PilotGitError, branch_role
 
 TIMESTAMP = re.compile(r"_(\d{8}_\d{6}_\d{6})\.json$")
@@ -88,14 +97,6 @@ def write_decision_record(pilot_root, task_id, payload, gate="H3"):
     return path
 
 
-def find_pilot_issue(github, task_id):
-    """The official pilot issue of a task (created by the Issue Sync Agent)."""
-    for issue in github.list_all_issues():
-        if PILOT_LABEL in label_names(issue) and read_marker(issue.get("body")) == task_id:
-            return issue["number"]
-    return None
-
-
 def comment_on_pilot_issue(github, task_id, text):
     """Best effort: a GitHub problem must not undo the human's decision."""
     if github is None:
@@ -112,6 +113,21 @@ def comment_on_pilot_issue(github, task_id, text):
     except Exception as error:
         print(f"Could not comment on the pilot issue: {error}")
         return None
+
+
+def update_board_after_reject(github, git_agent, task_id):
+    """Back to Todo, unless an earlier attempt of this task was already approved (merged)."""
+    if github is None:
+        return
+    try:
+        already_approved = task_id in approved_task_ids(git_agent)
+    except Exception as error:
+        print(f"WARNING: could not check the earlier H3 approvals; the board was not updated: {error}")
+        return
+    if already_approved:
+        print(f"Board: {task_id} was approved at H3 before, so its Status stays as it is.")
+    else:
+        set_task_status(github, task_id, TODO)
 
 
 def ask_choice(ask, prompt, choices):
@@ -317,6 +333,18 @@ def run_h3_review(
 
     if decision == "approve":
         record["notes"] = ask("Optional note for the record (Enter to skip): ").strip()
+
+        # Asked now, so the answer is part of the approve record; the agent acts
+        # on it only after a successful merge (an unmerged task is never closed).
+        issue_number = find_issue_safely(github, task_id)
+        close_issue = None
+        if issue_number is not None:
+            close_issue = ask_choice(
+                ask, f"Are all acceptance criteria of issue #{issue_number} met? Close it? (yes/no): ", ("yes", "no")
+            ) == "yes"
+        record["issue"] = issue_number
+        record["issue_closed"] = close_issue
+
         orchestrator.record_approval("H3", "approve", record["notes"])
         record_path = write_decision_record(pilot_root, task_id, record)
         git_agent.commit_records(task_id, [record_path], "Record the H3 approval")
@@ -334,6 +362,7 @@ def run_h3_review(
             f"H3 approved by the human reviewer. The Pilot Git Agent merged `{branch}` into "
             f"`pilot/main` (merge commit `{merge_commit}`). Latest tests: {record['latest_tests']}.",
         )
+        finish_issue_after_approval(github, task_id, issue_number, close_issue)
         return {"decision": "approve", "branch": branch, "merge_commit": merge_commit, "pushed": pushed}
 
     if decision == "reject":
@@ -348,6 +377,7 @@ def run_h3_review(
             github, task_id,
             f"H3 rejected by the human reviewer: `{branch}` was deleted. Reason: {record['notes'] or 'not given'}.",
         )
+        update_board_after_reject(github, git_agent, task_id)
         return {"decision": "reject", "branch": branch}
 
     # revise

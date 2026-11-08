@@ -36,6 +36,7 @@ from agents.h2b_ui_stack import run_h2b_review
 from agents.h3_review import document_checks, run_h3_review, write_decision_record
 from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
+from agents.pilot_board import IN_PROGRESS, approved_task_ids, plan_board_sync, set_task_status
 from agents.pilot_environment import PilotEnvironment
 from agents.pilot_git_agent import PilotGitAgent, PilotGitError, branch_role, branch_task_id
 from agents.software_architect import SoftwareArchitectAgent
@@ -874,7 +875,9 @@ def request_fresh_approvals(project_root, orchestrator, next_step, require_h2=Tr
     return snapshot, architecture
 
 
-def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None, task_id="T1", environment=None, ask=None):
+def run_resume_patch(
+    project_root, orchestrator, agent=None, git_agent=None, task_id="T1", environment=None, ask=None, github=None,
+):
     """Load saved context, request fresh approvals, and offer a backend patch.
 
     task_id: the task the Backend Agent works on. --resume-patch uses T1;
@@ -882,6 +885,7 @@ def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None, tas
     environment replaces the pilot's .venv in the tests.
     ask: how to ask the human (input by default; looked up at call time, so
     tests that replace input still work).
+    github: GitHub client for the pilot board (None: the board is not updated).
     """
 
     project_root = Path(project_root)
@@ -972,6 +976,7 @@ def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None, tas
         report_path=report_path,
         record_paths=[patch_path, report_path, snapshot_path],
         git_agent=git_agent,
+        github=github,
     )
 
     loop_report = None
@@ -1013,7 +1018,9 @@ def missing_dependency_approvals(project_root, task):
     ]
 
 
-def run_backend_patch(project_root, orchestrator, task_id, agent=None, git_agent=None, environment=None, ask=input):
+def run_backend_patch(
+    project_root, orchestrator, task_id, agent=None, git_agent=None, environment=None, ask=input, github=None,
+):
     """--backend-patch TASK: check the task, then run the --resume-patch chain for it.
 
     fresh H1 -> H2 -> snapshot refresh -> Backend Agent -> agent branch ->
@@ -1064,7 +1071,7 @@ def run_backend_patch(project_root, orchestrator, task_id, agent=None, git_agent
 
     return run_resume_patch(
         project_root, orchestrator, agent=agent, git_agent=git_agent,
-        task_id=task_id, environment=environment, ask=ask,
+        task_id=task_id, environment=environment, ask=ask, github=github,
     )
 
 
@@ -1242,11 +1249,15 @@ def short_subject(summary, limit=72):
     return first if len(first) <= limit else first[: limit - 3].rstrip() + "..."
 
 
-def apply_patch_with_pilot_git_agent(project_root, patch_path, report_path, record_paths, git_agent=None, role="backend"):
+def apply_patch_with_pilot_git_agent(
+    project_root, patch_path, report_path, record_paths, git_agent=None, role="backend", github=None,
+):
     """Let the Pilot Git Agent commit the proposal on a new agent/ branch.
 
     Returns the AgentCommitResult, or None when the step could not run; the
     proposal files are then kept for review and the workspace is unchanged.
+    github: when given, the task's card on the pilot board moves to In Progress
+    (best effort: a board problem only prints a warning).
     """
 
     try:
@@ -1274,7 +1285,58 @@ def apply_patch_with_pilot_git_agent(project_root, patch_path, report_path, reco
     print(f"Files:          {', '.join(agent_commit.committed_files)}")
     waits_for = "the H3 decision" if role == "docs" else "the tests and the H3 decision"
     print(f"Not pushed and not merged: this waits for {waits_for}.")
+    set_task_status(github, agent_commit.task_id, IN_PROGRESS)
     return agent_commit
+
+
+def optional_github_client():
+    """A GitHub client for the board, or None (with a note) when GitHub is not set up."""
+    try:
+        return GitHubClient()
+    except Exception as error:
+        print(f"GitHub not available ({error}); the pilot board will not be updated.")
+        return None
+
+
+def run_sync_pilot_board(project_root, github_client=None, git_agent=None, ask=input):
+    """--sync-pilot-board: make the board Status of every official pilot issue match the facts.
+
+    closed -> Done; open with an H3 approve record on pilot/main -> In Progress;
+    otherwise Todo. No Gemini request and no gate: it only mirrors what Git and
+    GitHub already say. The plan is shown first; nothing changes without 'yes'.
+    """
+
+    project_root = Path(project_root)
+    git_agent = git_agent or PilotGitAgent(project_root, workflow_root=Path(__file__).resolve().parent)
+
+    try:
+        github = github_client or GitHubClient()
+        approved = approved_task_ids(git_agent)
+        rows = plan_board_sync(github.list_all_issues(), approved, github.issue_status)
+    except Exception as error:
+        print(f"\nCould not read the pilot board: {error}")
+        print("Nothing was changed.")
+        return None
+
+    changes = [row for row in rows if row["current"] != row["target"]]
+
+    print("\nPILOT BOARD SYNC PLAN (nothing has changed yet)")
+    for row in rows:
+        mark = "->" if row in changes else "=="
+        print(f"  #{row['number']} {row['task_id']}: {row['current'] or 'no status'} {mark} {row['target']}")
+
+    if not changes:
+        print("\nThe board already matches. Nothing to do.")
+        return []
+
+    confirmation = ask(f"\nApply {len(changes)} change(s) on the board? Enter 'yes' to continue: ").strip().lower()
+    if confirmation != "yes":
+        print("\nBoard sync cancelled. Nothing was changed.")
+        return None
+
+    applied = [row for row in changes if set_task_status(github, row["task_id"], row["target"], row["number"])]
+    print(f"\nBoard sync finished: {len(applied)} of {len(changes)} change(s) applied.")
+    return applied
 
 
 def run_t1_tests(project_root, orchestrator, test_paths=None):
@@ -1467,7 +1529,9 @@ def build_frontend_project_context(project_root, ui_stack):
     }
 
 
-def run_frontend_patch(project_root, orchestrator, task_id, agent=None, git_agent=None, environment=None, run_command=None):
+def run_frontend_patch(
+    project_root, orchestrator, task_id, agent=None, git_agent=None, environment=None, run_command=None, github=None,
+):
     """One UI task: checks -> agent patch -> agent commit -> npm environment ->
     Vitest -> (one fix) -> Vitest -> loop report committed; then it waits for H3.
 
@@ -1548,6 +1612,7 @@ def run_frontend_patch(project_root, orchestrator, task_id, agent=None, git_agen
         record_paths=[patch_path, report_path],
         git_agent=git_agent,
         role="frontend",
+        github=github,
     )
 
     loop_report = None
@@ -1605,7 +1670,7 @@ def build_docs_project_context(project_root, task_id):
     }
 
 
-def run_docs_patch(project_root, orchestrator, task_id, agent=None, git_agent=None):
+def run_docs_patch(project_root, orchestrator, task_id, agent=None, git_agent=None, github=None):
     """One document: checks -> agent writes the document -> agent commit ->
     automatic reference checks; then it waits for H3 (no tests for a document).
     """
@@ -1665,6 +1730,7 @@ def run_docs_patch(project_root, orchestrator, task_id, agent=None, git_agent=No
         record_paths=[patch_path, report_path],
         git_agent=git_agent,
         role="docs",
+        github=github,
     )
 
     findings = []
@@ -1843,6 +1909,11 @@ def main(argv=None):
         action="store_true",
         help="Request a fresh H1, then align the pilot's GitHub Issues with the approved backlog.",
     )
+    parser.add_argument(
+        "--sync-pilot-board",
+        action="store_true",
+        help="Set the pilot board Status (Todo / In Progress / Done) from the issues and H3 records (no Gemini).",
+    )
     args = parser.parse_args(argv)
 
     workflow_root = Path(__file__).resolve().parent
@@ -1865,12 +1936,19 @@ def main(argv=None):
         )
 
     specification = read_text_file(specification_path)
+
+    # Before the Orchestrator is created: this command needs no Gemini at all.
+    if args.sync_pilot_board:
+        run_sync_pilot_board(project_root=project_root)
+        return
+
     orchestrator = OrchestratorAgent()
 
     if args.resume_patch:
         run_resume_patch(
             project_root=project_root,
             orchestrator=orchestrator,
+            github=optional_github_client(),
         )
         return
 
@@ -1893,6 +1971,7 @@ def main(argv=None):
             project_root=project_root,
             orchestrator=orchestrator,
             task_id=args.backend_patch,
+            github=optional_github_client(),
         )
         return
 
@@ -1901,6 +1980,7 @@ def main(argv=None):
             project_root=project_root,
             orchestrator=orchestrator,
             task_id=args.frontend_patch,
+            github=optional_github_client(),
         )
         return
 
@@ -1909,6 +1989,7 @@ def main(argv=None):
             project_root=project_root,
             orchestrator=orchestrator,
             task_id=args.docs_patch,
+            github=optional_github_client(),
         )
         return
 
