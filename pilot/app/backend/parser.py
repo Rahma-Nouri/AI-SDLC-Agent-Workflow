@@ -50,13 +50,13 @@ class DocumentParser:
 
     def parse(self, source: Union[str, Path, bytes, io.BytesIO], filename_hint: Optional[str] = None) -> ExtractionResult:
         """
-        Parses a document source (file path, raw bytes, or stream) and returns an ExtractionResult.
+        Parses a document source (file path, raw bytes, string content, or stream) and returns an ExtractionResult.
         """
         stream: io.BytesIO
         filename = filename_hint or ""
 
-        if isinstance(source, (str, Path)):
-            p = Path(source)
+        if isinstance(source, Path):
+            p = source
             filename = filename or p.name
             if not p.exists():
                 raise CorruptedDocumentError(f"File not found: {source}")
@@ -67,6 +67,26 @@ class DocumentParser:
                     stream = io.BytesIO(f.read())
             except Exception as e:
                 raise CorruptedDocumentError(f"Unable to read source file: {e}") from e
+        elif isinstance(source, str):
+            is_path = False
+            if "\n" not in source and "\r" not in source and len(source) < 4096:
+                try:
+                    p = Path(source)
+                    if p.exists():
+                        is_path = True
+                        filename = filename or p.name
+                        if p.stat().st_size == 0:
+                            raise CorruptedDocumentError(f"Document is empty (0 bytes): {source}")
+                        with open(p, "rb") as f:
+                            stream = io.BytesIO(f.read())
+                    elif source.endswith((".pdf", ".txt", ".text", ".md")) or "/" in source or "\\" in source:
+                        raise CorruptedDocumentError(f"File not found: {source}")
+                except (OSError, ValueError):
+                    is_path = False
+            if not is_path:
+                if len(source) == 0:
+                    raise CorruptedDocumentError("Document content is empty.")
+                stream = io.BytesIO(source.encode("utf-8"))
         elif isinstance(source, bytes):
             if len(source) == 0:
                 raise CorruptedDocumentError("Document content is empty.")
