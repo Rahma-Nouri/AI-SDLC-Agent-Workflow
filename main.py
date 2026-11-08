@@ -1,4 +1,5 @@
 import argparse
+import difflib
 import json
 import os
 import sys
@@ -32,7 +33,7 @@ from agents.frontend_developer import (
     ui_architecture_context,
 )
 from agents.h2b_ui_stack import run_h2b_review
-from agents.h3_review import document_checks, run_h3_review
+from agents.h3_review import document_checks, run_h3_review, write_decision_record
 from agents.issue_sync_agent import IssueSyncAgent, describe_plan, plan_sync
 from agents.orchestrator import OrchestratorAgent
 from agents.pilot_environment import PilotEnvironment
@@ -312,23 +313,177 @@ def validate_architecture(architecture, tasks):
     return report["valid"]
 
 
+def markdown_sections(text):
+    """Split a Markdown document into {heading: section text}."""
+
+    sections = {}
+    heading = "(text before the first heading)"
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            heading = line.strip().lstrip("#").strip()
+        sections.setdefault(heading, []).append(line)
+    return {name: "\n".join(lines) for name, lines in sections.items()}
+
+
+def print_revision_summary(old, new, branch, commit):
+    """What the Architect changed: the changed sections and the line counts."""
+
+    old_sections = markdown_sections(old)
+    new_sections = markdown_sections(new)
+    changed = [name for name in new_sections if old_sections.get(name) != new_sections[name]]
+    removed = [name for name in old_sections if name not in new_sections]
+
+    diff = list(difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm=""))
+    added_lines = sum(1 for line in diff if line.startswith("+") and not line.startswith("+++"))
+    removed_lines = sum(1 for line in diff if line.startswith("-") and not line.startswith("---"))
+
+    print(f"\nThe Architect Agent committed a revision on {branch} ({commit}).")
+    print(f"Lines: +{added_lines} -{removed_lines}")
+    print("Changed sections:")
+    for name in changed:
+        print(f"  ~ {name}")
+    for name in removed:
+        print(f"  - {name} (removed)")
+    if not changed and not removed:
+        print("  none")
+
+
+def run_architect_revision(pilot_root, architecture_path, tasks, specification, notes, architect, git_agent, branch):
+    """One H2 revision: the Architect rewrites the document, the Pilot Git Agent commits it.
+
+    branch: the revision branch of this H2 review, or None before the first revision.
+    Returns (branch, status). status is "committed", "coverage_failed" (refused,
+    nothing committed) or "failed" (the problem was printed).
+    """
+
+    if branch is None:
+        # Check the workspace first: a Gemini request must not be spent on a
+        # revision that could not be committed anyway.
+        try:
+            git_agent.ensure_ready()
+        except PilotGitError as error:
+            print(f"\nThe Architect cannot revise: {error}")
+            return branch, "failed"
+
+    old = read_text_file(architecture_path)
+    try:
+        revised = architect.revise_architecture(specification, old, tasks, notes)
+    except Exception as error:
+        print(f"\nThe Architect Agent could not revise the architecture: {error}")
+        return branch, "failed"
+
+    # The task IDs are frozen after H1: every approved task must still be covered.
+    print("\nChecking the revision's task-ID coverage...")
+    if not validate_architecture(revised, tasks):
+        print("\nThe revision is refused: it must keep every approved task ID. Nothing was committed.")
+        return branch, "coverage_failed"
+
+    try:
+        if branch is None:
+            branch = git_agent.start_architecture_revision()
+        record_path = write_decision_record(pilot_root, "architecture", {
+            "gate": "H2",
+            "decision": "revise",
+            "branch": branch,
+            "notes": notes,
+            "decided_at": datetime.now().isoformat(timespec="seconds"),
+        }, gate="H2")
+        commit = git_agent.commit_architecture_revision(revised, record_path)
+    except PilotGitError as error:
+        print(f"\nThe Pilot Git Agent could not commit the revision: {error}")
+        return branch, "failed"
+
+    print_revision_summary(old, revised, branch, commit)
+    return branch, "committed"
+
+
+def merge_architecture_revision(pilot_root, git_agent, branch, architecture, notes):
+    """H2 approve after a revision: record it, update the snapshot, merge and push.
+
+    Returns True when the revision is merged into pilot/main.
+    """
+
+    record_path = write_decision_record(pilot_root, "architecture", {
+        "gate": "H2",
+        "decision": "approve",
+        "branch": branch,
+        "notes": notes,
+        "decided_at": datetime.now().isoformat(timespec="seconds"),
+    }, gate="H2")
+
+    # The snapshot gets the approved architecture; its task list stays as it is.
+    snapshot_path = Path(pilot_root) / "outputs" / "approved_context" / "current_approved_context.json"
+    snapshot = read_snapshot_if_valid(snapshot_path)
+    if snapshot:
+        snapshot["architecture"] = architecture
+        write_snapshot(snapshot_path, snapshot)
+
+    try:
+        # Records left over from earlier steps are committed too, so the merge can run.
+        leftovers = [Path(pilot_root) / path for path in git_agent.pending_records()]
+        git_agent.commit_records("architecture", [record_path, *leftovers], "Record the H2 approval")
+        merge_commit = git_agent.merge_into_base("architecture", branch, gate="H2")
+    except PilotGitError as error:
+        print(f"\nThe Pilot Git Agent could not merge the revision: {error}")
+        return False
+
+    print(f"\nMerged {branch} into pilot/main: {merge_commit}")
+    try:
+        git_agent.push_base()
+        print("Pushed pilot/main to GitHub.")
+    except Exception as error:
+        print(f"Push failed (the merge is kept locally): {error}")
+
+    if snapshot.get("ui_stack"):
+        print("\nWARNING: the snapshot has an approved UI stack (H2b) based on the old architecture.")
+        print("Check it, and run python main.py --h2b-ui-stack again if it no longer fits.")
+    return True
+
+
 def review_and_approve_architecture(
     orchestrator,
     architect,
     architecture_path,
     tasks,
+    specification=None,
+    git_agent=None,
+    ask=None,
 ):
-    """H2: approve only the current on-disk architecture if it validates."""
+    """H2: approve only the current on-disk architecture if it validates.
+
+    "revise" never asks the human to edit a file: the human writes notes, and the
+    Architect Agent changes the document on its own branch
+    (agent/architecture-revision-N). Approve merges that branch; reject deletes it.
+
+    The Architect, the Pilot Git Agent and the specification are only created or
+    read when "revise" is chosen, so an approve-only review makes no Gemini call.
+    ask: how to ask the human (input by default, looked up at call time).
+    """
+
+    ask = ask or input
+    architecture_path = Path(architecture_path)
+    pilot_root = architecture_path.parent.parent  # <pilot>/pilot/architecture_design.md
+    revision_branch = None  # set once the Architect committed a revision
+    coverage_failed = False  # the last revision lost a task ID: only revise or reject
+    last_notes = ""
 
     while True:
         print("\n" + "=" * 60)
         print("H2 — HUMAN APPROVAL: SOFTWARE ARCHITECTURE")
         print("=" * 60)
         print(f"Review this document:\n{architecture_path}")
+        if revision_branch:
+            print(f"(Revised by the Architect Agent on branch {revision_branch}.)")
 
-        decision = input(
-            "\nEnter 'approve', 'revise', or 'reject': "
-        ).strip().lower()
+        if coverage_failed:
+            decision = ask("\nEnter 'revise' or 'reject': ").strip().lower()
+            if decision == "approve":
+                print("The last revision was refused. Enter revise or reject.")
+                continue
+        else:
+            decision = ask(
+                "\nEnter 'approve', 'revise', or 'reject': "
+            ).strip().lower()
 
         if decision == "approve":
             try:
@@ -352,38 +507,70 @@ def review_and_approve_architecture(
 
             if not valid:
                 print("\nThe current architecture does not pass validation.")
-                print("Revise the document before requesting approval again.")
+                print("Choose 'revise' to send notes to the Architect Agent.")
                 continue
+
+            if revision_branch and not merge_architecture_revision(
+                pilot_root, git_agent, revision_branch, architecture, last_notes
+            ):
+                print("H2 approval cannot be granted.")
+                return False
 
             orchestrator.record_approval("H2", "approve")
             print("\nH2 approved: validated architecture accepted.")
             return True
 
         if decision == "reject":
-            orchestrator.record_approval("H2", "reject")
-            print("\nArchitecture rejected.")
-            return False
+            if revision_branch is None:
+                orchestrator.record_approval("H2", "reject")
+                print("\nArchitecture rejected.")
+                return False
+
+            # Reject the Architect's revision: back to the old architecture.
+            reason = ask("Why do you reject the revision? (saved in the record): ").strip()
+            orchestrator.record_approval("H2", "reject", reason)
+            try:
+                git_agent.delete_agent_branch(revision_branch)
+            except PilotGitError as error:
+                print(f"\nThe Pilot Git Agent could not delete {revision_branch}: {error}")
+                return False
+            # Written after the deletion, so the record lands on pilot/main as a run
+            # record; the next agent branch commits it, so the decision is not lost.
+            write_decision_record(pilot_root, "architecture", {
+                "gate": "H2",
+                "decision": "reject",
+                "branch": revision_branch,
+                "notes": reason,
+                "decided_at": datetime.now().isoformat(timespec="seconds"),
+            }, gate="H2")
+            print(f"\nDeleted {revision_branch}. The old architecture stays on pilot/main.")
+            revision_branch = None
+            coverage_failed = False
+            continue
 
         if decision == "revise":
-            feedback = input(
+            notes = ask(
                 "\nWhat needs to change in the architecture? "
-                "Enter your review notes: "
+                "Enter your review notes (the Architect Agent makes the change): "
             ).strip()
 
-            if not feedback:
+            if not notes:
                 print("Review notes cannot be empty.")
                 continue
 
-            print("\nRevision notes:")
-            print(feedback)
-            print("\nPlease edit the architecture document manually:")
-            print(architecture_path)
-            print(
-                "\nAfter editing, return here and choose 'approve'. "
-                "The current file will be validated again."
-            )
+            orchestrator.record_approval("H2", "revise", notes)
+            last_notes = notes
 
-            input("Press Enter after you have finished editing the file...")
+            # Created only now, so an approve-only review makes no Gemini call.
+            architect = architect or SoftwareArchitectAgent()
+            git_agent = git_agent or PilotGitAgent(pilot_root, workflow_root=Path(__file__).resolve().parent)
+            if specification is None:
+                specification = read_text_file(pilot_root / "pilot" / "pilot_specification.md")
+
+            revision_branch, status = run_architect_revision(
+                pilot_root, architecture_path, tasks, specification, notes, architect, git_agent, revision_branch
+            )
+            coverage_failed = status == "coverage_failed"
             continue
 
         print("Invalid choice. Enter approve, revise, or reject.")

@@ -61,7 +61,7 @@ Failure cases #11–#18 found during these runs, and a comparison of the manual 
 
 | Gap | Effect | Planned |
 |---|---|---|
-| H2 "revise" asks the human to edit the architecture file by hand | Breaks the rule that the human only decides in the pilot | Send the feedback to the Architect agent |
+| ~~H2 "revise" asks the human to edit the architecture file by hand~~ | Fixed in P2.5b-2: revise = feedback to the Architect agent, which commits the change on `agent/architecture-revision-N` (approve merges, reject deletes) | Done |
 | Legacy full run (`python main.py` without a flag) | Regenerates the backlog, overwrites the official snapshot, writes into the pilot without an agent commit | Align with the two-worlds design or remove |
 | `pytest` is missing from `requirements.txt` | Needs a separate install (see README) | Small fix |
 | Ticket Quality Checker not connected to the main flow | Task quality is not checked automatically | Later |
@@ -75,5 +75,4 @@ Failure cases #11–#18 found during these runs, and a comparison of the manual 
 
 - Run further pilot tasks through the same chain and collect the evaluation data.
 - First real frontend run (`--frontend-patch T7`) and Documentation Agent.
-- Fix the H2 revise gap and the legacy full run.
 - Evaluation of the agents' work quality for the thesis.

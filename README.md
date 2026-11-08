@@ -26,7 +26,9 @@ The workflow code reads and writes the pilot **only** in the pilot workspace (or
 
 ```text
 H1  approve plan + backlog (official snapshot, 17 tasks T1–T17)
-H2  approve architecture (task coverage is validated automatically)
+H2  approve architecture (task coverage is validated automatically); revise = notes to
+    the Architect Agent, who commits the change on agent/architecture-revision-N
+    (approve merges it, reject deletes it)
  │
  ├─ Backend Developer Agent (Gemini) proposes a change as structured JSON;
  │  the patch is built locally and checked (paths, Python syntax)

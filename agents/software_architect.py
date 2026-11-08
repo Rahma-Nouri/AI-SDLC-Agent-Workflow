@@ -278,6 +278,72 @@ Return the architecture document in Markdown.
 
         return architecture.strip()
 
+    def revise_architecture(self, specification, architecture, tasks, notes):
+        """Revise the architecture after the human's H2 notes: one Gemini request.
+
+        Returns the complete revised Markdown document. The task IDs are frozen
+        after H1; the caller checks the coverage again (validate_task_coverage)
+        before anything is committed.
+        """
+
+        if not isinstance(architecture, str) or not architecture.strip():
+            raise ValueError("The current architecture cannot be empty.")
+
+        if not isinstance(notes, str) or not notes.strip():
+            raise ValueError("The revision notes cannot be empty.")
+
+        # Validate task IDs and reject duplicate IDs before calling Gemini.
+        self.validate_task_coverage("", tasks)
+
+        task_list = "\n".join(
+            f"{task['task_id']}: {task.get('title', '')}" for task in tasks
+        )
+
+        prompt = f"""
+You are the Software Architect Agent in an AI-supported
+end-to-end software development workflow.
+
+The human reviewer did not approve the architecture yet (gate H2) and wrote
+revision notes. Revise the architecture document according to the notes.
+
+PILOT PROJECT SPECIFICATION
+{specification}
+
+APPROVED DEVELOPMENT TASKS (frozen after H1)
+{task_list}
+
+CURRENT ARCHITECTURE DOCUMENT
+{architecture}
+
+HUMAN REVIEWER NOTES
+{notes}
+
+Rules:
+- Return the complete revised document, not only the changed parts.
+- Address every note explicitly. Keep the parts the notes do not question.
+- Keep the same section structure, including "Mapping to Approved Tasks".
+- Keep every approved task ID exactly as written above. Do not rename,
+  merge, split, add or remove tasks.
+- Do not generate application source code.
+- Do not invent requirements and present them as confirmed facts.
+
+Return the architecture document in Markdown.
+"""
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+        )
+
+        revised = getattr(response, "text", None)
+
+        if not isinstance(revised, str) or not revised.strip():
+            raise RuntimeError(
+                "The Software Architect Agent returned an empty revision."
+            )
+
+        return revised.strip() + "\n"
+
     def propose_ui_stack(
         self,
         specification,

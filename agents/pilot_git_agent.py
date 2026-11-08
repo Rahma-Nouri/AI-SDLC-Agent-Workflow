@@ -45,12 +45,25 @@ AGENT_ROLES = {
         "title": "Documentation Agent",
         "branch_part": "-docs",
     },
+    # P2.5b-2: the Software Architect Agent revises the architecture after the
+    # human's H2 notes. Its branches are not task attempts, so they have their
+    # own name: agent/architecture-revision-1 (see ARCHITECTURE_BRANCH).
+    "architect": {
+        "name": "AI-SDLC Architect Agent",
+        "email": "architect-agent@ai-sdlc.local",
+        "title": "Software Architect Agent",
+        "branch_part": "",
+    },
 }
 
 # Everything under outputs/ is a run record (proposals, reports, snapshot).
 # Records never block a run, and the agent commits them on its branch, so
 # evidence of earlier failed attempts is kept, not lost.
 RECORDS_PREFIX = "outputs/"
+
+# The only file the Architect Agent may change, and the name of its branches.
+ARCHITECTURE_FILE = "pilot/architecture_design.md"
+ARCHITECTURE_BRANCH = f"{BRANCH_PREFIX}architecture-revision-"
 
 
 def _branch_work_name(branch):
@@ -63,7 +76,10 @@ def branch_role(branch):
 
     The role is the branch name's ending before "-attempt-": agent/T1-docs-attempt-1
     is a docs branch. Backend branches have no ending (agent/T1-attempt-1).
+    agent/architecture-revision-1 belongs to the Architect Agent.
     """
+    if branch.startswith(ARCHITECTURE_BRANCH):
+        return "architect"
     work_name = _branch_work_name(branch)
     for role, details in AGENT_ROLES.items():
         if details["branch_part"] and work_name.endswith(details["branch_part"]):
@@ -351,8 +367,8 @@ class PilotGitAgent:
         files = self._git("diff", "--stat", f"{BASE_BRANCH}...HEAD", "--", ".", f":(exclude){RECORDS_PREFIX}").stdout.strip()
         return {"branch": branch, "commits": commits, "changed_files": files}
 
-    def merge_into_base(self, task_id, branch):
-        """After an H3 approval: merge the agent branch into pilot/main."""
+    def merge_into_base(self, task_id, branch, gate="H3"):
+        """After an H3 (or H2) approval: merge the agent branch into pilot/main."""
         if self.current_agent_branch() != branch:
             raise PilotGitError(f"Expected to be on {branch}.")
         if self._changed_paths():
@@ -361,7 +377,7 @@ class PilotGitAgent:
         self._git("switch", BASE_BRANCH)
         merged = self._git(
             *commit_identity(branch), "merge", "--no-ff", branch,
-            "-m", f"[{task_id}] Merge {branch} after the human's H3 approval",
+            "-m", f"[{task_id}] Merge {branch} after the human's {gate} approval",
             check=False,
         )
         if merged.returncode != 0:
@@ -398,6 +414,54 @@ class PilotGitAgent:
 
         self._git("add", "--", *to_commit)
         self._git(*commit_identity(branch), "commit", "-m", f"[{task_id}] {message}")
+        return self._git("rev-parse", "--short", "HEAD").stdout.strip()
+
+    def pending_records(self):
+        """Run records under outputs/ that are not committed yet."""
+        return [path for path in self._changed_paths() if path.startswith(RECORDS_PREFIX)]
+
+    # --- H2 architecture revision (P2.5b-2) --------------------------------
+
+    def start_architecture_revision(self):
+        """Create agent/architecture-revision-<n> from a clean pilot/main and switch to it."""
+        self.ensure_ready()
+        existing = self._git("branch", "--list", f"{ARCHITECTURE_BRANCH}*").stdout
+        number = len([line for line in existing.splitlines() if line.strip()]) + 1
+        branch = f"{ARCHITECTURE_BRANCH}{number}"
+        self._git("switch", "-c", branch)
+        return branch
+
+    def commit_architecture_revision(self, architecture, record_path):
+        """Write the revised architecture and commit it with the record of the human's notes.
+
+        Only these two files are committed, by the Architect Agent. If anything
+        goes wrong, the architecture file is restored, so no half-done change stays.
+        """
+        branch = self.current_agent_branch()
+        if branch_role(branch) != "architect":
+            raise PilotGitError(f"Architecture revisions belong on {ARCHITECTURE_BRANCH}<n>, not on {branch}.")
+
+        record = self._relative(record_path)
+        if not record.startswith(RECORDS_PREFIX):
+            raise PilotGitError(f"The notes record must be under {RECORDS_PREFIX}: {record}")
+
+        # newline="\n": Git stores LF, like the files written by the other agents.
+        (self.pilot_root / ARCHITECTURE_FILE).write_text(architecture, encoding="utf-8", newline="\n")
+        try:
+            changed = [path for path in self._changed_paths() if not path.startswith(RECORDS_PREFIX)]
+            if changed != [ARCHITECTURE_FILE]:
+                raise PilotGitError(
+                    f"The revision must change only {ARCHITECTURE_FILE}; changed: {changed or 'nothing'}"
+                )
+            self._git("add", "--", ARCHITECTURE_FILE, record)
+            self._git(
+                *commit_identity(branch), "commit", "-m", "[architecture] Revise the architecture after the H2 notes",
+                "-m", "Proposed by the Software Architect Agent. Not approved yet: waiting for the human's H2 decision.",
+            )
+        except Exception:
+            self._git("reset", "--quiet", check=False)
+            self._git("checkout", "--", ARCHITECTURE_FILE, check=False)
+            raise
         return self._git("rev-parse", "--short", "HEAD").stdout.strip()
 
     def _undo_branch(self, branch, patch_path, state):
