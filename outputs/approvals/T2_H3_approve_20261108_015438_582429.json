@@ -1,0 +1,16 @@
+{
+  "gate": "H3",
+  "task_id": "T2",
+  "branch": "agent/T2-attempt-1",
+  "decision": "approve",
+  "decided_at": "2026-11-08T01:54:32",
+  "latest_tests": "passed",
+  "agent_commits": [
+    "a4d5b9e AI-SDLC Backend Agent: [T2] Record the correction loop report",
+    "a5e7cbf AI-SDLC Backend Agent: [T2] Record the fix proposal and report",
+    "5c9a195 AI-SDLC Backend Agent: [T2] Fix: Fix DocumentParser to distinguish between file paths and raw",
+    "d1a6904 AI-SDLC Backend Agent: [T2] Record the patch proposal and report",
+    "1cbe92f AI-SDLC Backend Agent: [T2] Implement document parsing pipeline and layout extraction framework s..."
+  ],
+  "notes": ""
+}

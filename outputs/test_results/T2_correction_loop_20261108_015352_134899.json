@@ -1,0 +1,70 @@
+{
+  "task_id": "T2",
+  "branch": "agent/T2-attempt-1",
+  "tests_generated": [
+    "tests/test_backend_parser.py"
+  ],
+  "tests_run": [
+    "tests/test_backend_parser.py"
+  ],
+  "environment": [
+    {
+      "status": "ready",
+      "python": "C:\\Users\\HP\\OneDrive - Budapesti Műszaki és Gazdaságtudományi Egyetem\\1st semester\\AI-SDLC-pilot-workspace\\.venv\\Scripts\\python.exe",
+      "packages": [
+        "SQLAlchemy>=2.0.0",
+        "pytest==9.1.1"
+      ],
+      "installed_now": false,
+      "detail": "Packages unchanged since the last approval."
+    },
+    {
+      "status": "ready",
+      "python": "C:\\Users\\HP\\OneDrive - Budapesti Műszaki és Gazdaságtudományi Egyetem\\1st semester\\AI-SDLC-pilot-workspace\\.venv\\Scripts\\python.exe",
+      "packages": [
+        "SQLAlchemy>=2.0.0",
+        "pytest==9.1.1"
+      ],
+      "installed_now": false,
+      "detail": "Packages unchanged since the last approval."
+    }
+  ],
+  "validation": [
+    {
+      "check": "imports_vs_requirements",
+      "file": "pilot/app/backend/parser.py",
+      "line": 8,
+      "message": "imports 'pypdf', but 'pypdf' is not in requirements.txt"
+    }
+  ],
+  "runs": [
+    {
+      "attempt": 0,
+      "command": "\"C:\\Users\\HP\\OneDrive - Budapesti Műszaki és Gazdaságtudományi Egyetem\\1st semester\\AI-SDLC-pilot-workspace\\.venv\\Scripts\\python.exe\" -m pytest tests/test_backend_parser.py -q -p no:cacheprovider",
+      "exit_code": 1,
+      "passed": false,
+      "output_tail": "F......                                                                  [100%]\n================================== FAILURES ===================================\n________________ TestDocumentParser.test_benchmark_extraction _________________\n\nself = <test_backend_parser.TestDocumentParser testMethod=test_benchmark_extraction>\n\n    def test_benchmark_extraction(self):\n        docs = {\n            \"exam_sample_1.txt\": \"Question 1: Define process scheduling.\\nQuestion 2: Define thread.\\n\" * 10,\n            \"exam_sample_2.pdf\": create_mock_pdf_bytes([\"Exam Paper Part A\", \"Question 1: OS Kernels\"])\n        }\n>       benchmarks = benchmark_extraction(docs)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests\\test_backend_parser.py:96: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\npilot\\app\\backend\\parser.py:231: in benchmark_extraction\n    result = parser.parse(content, filename_hint=doc_name)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n\nself = <pilot.app.backend.parser.DocumentParser object at 0x0000029F32F59090>\nsource = 'Question 1: Define process scheduling.\\nQuestion 2: Define thread.\\nQuestion 1: Define process scheduling.\\nQuestion ... process scheduling.\\nQuestion 2: Define thread.\\nQuestion 1: Define process scheduling.\\nQuestion 2: Define thread.\\n'\nfilename_hint = 'exam_sample_1.txt'\n\n    def parse(self, source: Union[str, Path, bytes, io.BytesIO], filename_hint: Optional[str] = None) -> ExtractionResult:\n        \"\"\"\n        Parses a document source (file path, raw bytes, or stream) and returns an ExtractionResult.\n        \"\"\"\n        stream: io.BytesIO\n        filename = filename_hint or \"\"\n    \n        if isinstance(source, (str, Path)):\n            p = Path(source)\n            filename = filename or p.name\n            if not p.exists():\n>               raise CorruptedDocumentError(f\"File not found: {source}\")\nE               pilot.app.backend.parser.CorruptedDocumentError: File not found: Question 1: Define process scheduling.\nE               Question 2: Define thread.\nE               Question 1: Define process scheduling.\nE               Question 2: Define thread.\nE               Question 1: Define process scheduling.\nE               Question 2: Define thread.\nE               Question 1: Define process scheduling.\nE               Question 2: Define thread.\nE               Question 1: Define process scheduling.\nE               Question 2: Define thread.\nE               Question 1: Define process scheduling.\nE               Question 2: Define thread.\nE               Question 1: Define process scheduling.\nE               Question 2: Define thread.\nE               Question 1: Define process scheduling.\nE               Question 2: Define thread.\nE               Question 1: Define process scheduling.\nE               Question 2: Define thread.\nE               Question 1: Define process scheduling.\nE               Question 2: Define thread.\n\npilot\\app\\backend\\parser.py:62: CorruptedDocumentError\n=========================== short test summary info ===========================\nFAILED tests/test_backend_parser.py::TestDocumentParser::test_benchmark_extraction\n1 failed, 6 passed in 0.09s\n"
+    },
+    {
+      "attempt": 1,
+      "command": "\"C:\\Users\\HP\\OneDrive - Budapesti Műszaki és Gazdaságtudományi Egyetem\\1st semester\\AI-SDLC-pilot-workspace\\.venv\\Scripts\\python.exe\" -m pytest tests/test_backend_parser.py -q -p no:cacheprovider",
+      "exit_code": 0,
+      "passed": true,
+      "output_tail": ".......                                                                  [100%]\n7 passed in 0.05s\n"
+    }
+  ],
+  "fix_attempts": [
+    {
+      "attempt": 1,
+      "outcome": "committed",
+      "detail": "Fix DocumentParser to distinguish between file paths and raw text strings when source is a string, allowing in-memory text strings to be parsed directly.",
+      "patch_path": "C:\\Users\\HP\\OneDrive - Budapesti Műszaki és Gazdaságtudományi Egyetem\\1st semester\\AI-SDLC-pilot-workspace\\outputs\\proposed_changes\\T2_backend_fix1_20261108_015350_863126.patch",
+      "code_commit": "5c9a195"
+    }
+  ],
+  "final_result": "passed",
+  "decision": "ready_for_review",
+  "trigger": "automatic",
+  "human_feedback": null,
+  "tests_may_change": false
+}
