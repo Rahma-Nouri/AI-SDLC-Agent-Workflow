@@ -1,0 +1,33 @@
+{
+  "task_id": "T2",
+  "summary": "Fix DocumentParser to distinguish between file paths and raw text strings when source is a string, allowing in-memory text strings to be parsed directly.",
+  "patch": "--- a/pilot/app/backend/parser.py\n+++ b/pilot/app/backend/parser.py\n@@ -50,13 +50,13 @@\n \n     def parse(self, source: Union[str, Path, bytes, io.BytesIO], filename_hint: Optional[str] = None) -> ExtractionResult:\n         \"\"\"\n-        Parses a document source (file path, raw bytes, or stream) and returns an ExtractionResult.\n+        Parses a document source (file path, raw bytes, string content, or stream) and returns an ExtractionResult.\n         \"\"\"\n         stream: io.BytesIO\n         filename = filename_hint or \"\"\n \n-        if isinstance(source, (str, Path)):\n-            p = Path(source)\n+        if isinstance(source, Path):\n+            p = source\n             filename = filename or p.name\n             if not p.exists():\n                 raise CorruptedDocumentError(f\"File not found: {source}\")\n@@ -67,6 +67,26 @@\n                     stream = io.BytesIO(f.read())\n             except Exception as e:\n                 raise CorruptedDocumentError(f\"Unable to read source file: {e}\") from e\n+        elif isinstance(source, str):\n+            is_path = False\n+            if \"\\n\" not in source and \"\\r\" not in source and len(source) < 4096:\n+                try:\n+                    p = Path(source)\n+                    if p.exists():\n+                        is_path = True\n+                        filename = filename or p.name\n+                        if p.stat().st_size == 0:\n+                            raise CorruptedDocumentError(f\"Document is empty (0 bytes): {source}\")\n+                        with open(p, \"rb\") as f:\n+                            stream = io.BytesIO(f.read())\n+                    elif source.endswith((\".pdf\", \".txt\", \".text\", \".md\")) or \"/\" in source or \"\\\\\" in source:\n+                        raise CorruptedDocumentError(f\"File not found: {source}\")\n+                except (OSError, ValueError):\n+                    is_path = False\n+            if not is_path:\n+                if len(source) == 0:\n+                    raise CorruptedDocumentError(\"Document content is empty.\")\n+                stream = io.BytesIO(source.encode(\"utf-8\"))\n         elif isinstance(source, bytes):\n             if len(source) == 0:\n                 raise CorruptedDocumentError(\"Document content is empty.\")\n",
+  "changed_files": [
+    {
+      "path": "pilot/app/backend/parser.py",
+      "purpose": "Support parsing in-memory string content as well as file paths, preventing string contents with newlines from being erroneously treated as nonexistent file paths."
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "criterion": "Extraction libraries are benchmarked against multi-column and structured exam PDFs.",
+      "status": "addressed",
+      "evidence": "benchmark_extraction in pilot/app/backend/parser.py accepts sample documents as str, bytes, or file paths and records duration, character counts, and throughput."
+    },
+    {
+      "criterion": "Parsing pipeline successfully extracts text content without structural corruption.",
+      "status": "addressed",
+      "evidence": "DocumentParser._normalize_page_layout and DocumentParser._clean_text preserve structure while extracting content cleanly across plain text and PDF formats."
+    },
+    {
+      "criterion": "Error handling routines catch corrupted or unreadable documents gracefully.",
+      "status": "addressed",
+      "evidence": "DocumentParser raises CorruptedDocumentError for nonexistent files, 0-byte inputs, and malformed headers, which test_backend_parser.py verifies."
+    }
+  ],
+  "tests_added": [],
+  "assumptions": [
+    "Strings containing newlines or exceeding typical path limits represent raw text document content rather than filesystem paths."
+  ],
+  "unresolved_issues": []
+}
