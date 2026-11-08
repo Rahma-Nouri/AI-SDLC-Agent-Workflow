@@ -47,6 +47,14 @@ from integrations.github_client import GitHubClient
 # (see "tests_added" in its report) and were applied in P1.2.
 T1_TEST_PATHS = ["tests/test_backend_database_schema.py"]
 
+# Tasks the Backend Agent must not take, and where they belong instead.
+# T7's description asks only for the student-facing interface (done by the
+# Frontend Agent). No approved task is documentation only yet; such a task
+# would get an entry here too.
+NOT_BACKEND_TASKS = {
+    "T7": "it is UI only. Use: python main.py --frontend-patch T7",
+}
+
 # World 2 (the pilot) lives in its own folder: a Git worktree of the
 # pilot/main branch, next to this project folder. The workflow code (World 1)
 # reads and writes the pilot only there, never inside this project folder.
@@ -389,7 +397,29 @@ def create_t1_backend_patch(
     output_dir,
     agent=None,
 ):
-    """Generate and save a T1 backend patch without applying it."""
+    """The T1 patch of the legacy run (kept under its old name)."""
+
+    return create_backend_patch(
+        orchestrator=orchestrator,
+        tasks=tasks,
+        architecture=architecture,
+        project_context=project_context,
+        output_dir=output_dir,
+        agent=agent,
+        task_id="T1",
+    )
+
+
+def create_backend_patch(
+    orchestrator,
+    tasks,
+    architecture,
+    project_context,
+    output_dir,
+    agent=None,
+    task_id="T1",
+):
+    """Generate and save a backend patch for one approved task, without applying it."""
 
     if not orchestrator.workflow_state["backlog_approved"]:
         raise RuntimeError(
@@ -405,13 +435,13 @@ def create_t1_backend_patch(
         (
             item
             for item in tasks
-            if item.get("task_id") == "T1"
+            if item.get("task_id") == task_id
         ),
         None,
     )
 
     if task is None:
-        raise ValueError("Approved task T1 was not found in the task list.")
+        raise ValueError(f"Approved task {task_id} was not found in the task list.")
 
     work_package = orchestrator.delegate_task(
         task,
@@ -657,10 +687,18 @@ def request_fresh_approvals(project_root, orchestrator, next_step, require_h2=Tr
     return snapshot, architecture
 
 
-def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None):
-    """Load saved context, request fresh approvals, and offer a patch."""
+def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None, task_id="T1", environment=None, ask=None):
+    """Load saved context, request fresh approvals, and offer a backend patch.
+
+    task_id: the task the Backend Agent works on. --resume-patch uses T1;
+    --backend-patch TASK checks the task first (run_backend_patch), then comes here.
+    environment replaces the pilot's .venv in the tests.
+    ask: how to ask the human (input by default; looked up at call time, so
+    tests that replace input still work).
+    """
 
     project_root = Path(project_root)
+    ask = ask or input
 
     approved = request_fresh_approvals(
         project_root,
@@ -689,8 +727,8 @@ def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None):
 
     print(f"\nRefreshed approved-context snapshot: {snapshot_path}")
 
-    confirmation = input(
-        "\nGenerate a proposed T1 backend patch from this approved context? "
+    confirmation = ask(
+        f"\nGenerate a proposed {task_id} backend patch from this approved context? "
         "Enter 'yes' to continue: "
     ).strip().lower()
 
@@ -717,13 +755,14 @@ def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None):
         return None
 
     try:
-        patch_path, report_path = create_t1_backend_patch(
+        patch_path, report_path = create_backend_patch(
             orchestrator=orchestrator,
             tasks=tasks,
             architecture=architecture,
             project_context=project_context,
             output_dir=project_root / "outputs" / "proposed_changes",
             agent=agent,
+            task_id=task_id,
         )
     except Exception as error:
         print(f"\nPatch generation failed: {error}")
@@ -759,6 +798,7 @@ def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None):
             agent_commit=agent_commit,
             backend_agent=agent,
             git_agent=git_agent,
+            environment=environment,
         )
 
     print("No GitHub synchronization was performed.")
@@ -769,6 +809,76 @@ def run_resume_patch(project_root, orchestrator, agent=None, git_agent=None):
         "agent_commit": agent_commit,
         "loop_report": loop_report,
     }
+
+
+def missing_dependency_approvals(project_root, task):
+    """The task's dependencies that have no H3 approval record yet.
+
+    An H3 approve writes outputs/approvals/<task>_H3_approve_<time>.json, and
+    the agent commits it on its branch just before the merge into pilot/main.
+    So on pilot/main, the record is there exactly when the task was merged.
+    """
+
+    approvals = Path(project_root) / "outputs" / "approvals"
+    return [
+        dependency for dependency in task.get("dependencies", [])
+        if not any(approvals.glob(f"{dependency}_H3_approve_*.json"))
+    ]
+
+
+def run_backend_patch(project_root, orchestrator, task_id, agent=None, git_agent=None, environment=None, ask=input):
+    """--backend-patch TASK: check the task, then run the --resume-patch chain for it.
+
+    fresh H1 -> H2 -> snapshot refresh -> Backend Agent -> agent branch ->
+    pilot environment -> tests -> (one fix) -> tests -> loop report; then H3.
+    All checks run before the Gemini request, so a refused task costs nothing.
+    """
+
+    project_root = Path(project_root)
+    snapshot_path = project_root / "outputs" / "approved_context" / "current_approved_context.json"
+
+    try:
+        snapshot = load_approved_context(snapshot_path)
+    except ValueError as error:
+        print(f"\nThe backend patch needs an approved snapshot: {error}")
+        return None
+
+    task = next((item for item in snapshot["tasks"] if item.get("task_id") == task_id), None)
+    if task is None:
+        known = ", ".join(item["task_id"] for item in snapshot["tasks"])
+        print(f"\nTask {task_id} is not in the approved backlog. Approved tasks: {known}.")
+        return None
+
+    if task_id in NOT_BACKEND_TASKS:
+        print(f"\n{task_id} has no backend work: {NOT_BACKEND_TASKS[task_id]}")
+        return None
+
+    git_agent = git_agent or PilotGitAgent(project_root, workflow_root=Path(__file__).resolve().parent)
+
+    # Check the workspace first: a Gemini request must not be spent on a
+    # patch that could not be committed anyway.
+    try:
+        git_agent.ensure_ready()
+    except PilotGitError as error:
+        print(f"\nThe pilot workspace is not ready: {error}")
+        return None
+
+    # A warning only: the human may know why it is fine to go ahead.
+    missing = missing_dependency_approvals(project_root, task)
+    if missing:
+        print(f"\nWARNING: {task_id} depends on {', '.join(missing)}, but no H3 approval record was found for it.")
+        print("Its code may not be merged into pilot/main yet.")
+        answer = ""
+        while answer not in ("yes", "no"):
+            answer = ask("Continue anyway? (yes/no): ").strip().lower()
+        if answer == "no":
+            print("Stopped. Nothing was changed.")
+            return None
+
+    return run_resume_patch(
+        project_root, orchestrator, agent=agent, git_agent=git_agent,
+        task_id=task_id, environment=environment, ask=ask,
+    )
 
 
 def build_pilot_project_context(project_root):
@@ -1474,6 +1584,31 @@ def run_h3_review_command(
     return outcome
 
 
+def legacy_run_blocked(project_root):
+    """True (with an explanation) when the legacy run must not start.
+
+    The legacy run (no flag) writes a new backlog and architecture. Once an
+    approved snapshot exists, the task IDs are frozen after H1, and a new run
+    would overwrite them. Only a brand-new project (no snapshot) may use it.
+    """
+
+    snapshot_path = Path(project_root) / "outputs" / "approved_context" / "current_approved_context.json"
+    if not snapshot_path.exists():
+        return False
+
+    print("\nThe legacy run (no flag) is blocked for this pilot.")
+    print(f"An approved snapshot exists: {snapshot_path}")
+    print("The backlog is frozen after H1; the legacy run would overwrite it.")
+    print("Use one of these commands instead:")
+    print("  python main.py --backend-patch TASK     (Backend Agent, e.g. T2)")
+    print("  python main.py --frontend-patch TASK    (Frontend Agent, e.g. T7)")
+    print("  python main.py --docs-patch TASK        (Documentation Agent, e.g. T1)")
+    print("  python main.py --h3-review              (review the waiting agent branch)")
+    print("  python main.py --retest-agent-branch    (re-run the tests on the waiting branch)")
+    print("Nothing was changed.")
+    return True
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1495,6 +1630,11 @@ def main(argv=None):
         "--h2b-ui-stack",
         action="store_true",
         help="H2b: the Architect proposes the UI stack; approve, revise, or reject it.",
+    )
+    parser.add_argument(
+        "--backend-patch",
+        metavar="TASK",
+        help="Let the Backend Agent propose and commit a patch for this task, then test it, for example T2.",
     )
     parser.add_argument(
         "--frontend-patch",
@@ -1561,6 +1701,14 @@ def main(argv=None):
         )
         return
 
+    if args.backend_patch:
+        run_backend_patch(
+            project_root=project_root,
+            orchestrator=orchestrator,
+            task_id=args.backend_patch,
+        )
+        return
+
     if args.frontend_patch:
         run_frontend_patch(
             project_root=project_root,
@@ -1596,6 +1744,10 @@ def main(argv=None):
             project_root=project_root,
             orchestrator=orchestrator,
         )
+        return
+
+    # The legacy run: only for a brand-new project. Checked before any Gemini call.
+    if legacy_run_blocked(project_root):
         return
 
     checker = TicketQualityChecker()

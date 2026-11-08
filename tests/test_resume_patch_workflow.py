@@ -71,7 +71,7 @@ def test_h1_rejection_stops_before_h2_and_patch(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         workflow_main,
-        "create_t1_backend_patch",
+        "create_backend_patch",
         lambda **kwargs: patch_calls.append(kwargs),
     )
 
@@ -94,7 +94,7 @@ def test_h2_rejection_stops_before_patch(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         workflow_main,
-        "create_t1_backend_patch",
+        "create_backend_patch",
         lambda **kwargs: patch_calls.append(kwargs),
     )
 
@@ -128,7 +128,7 @@ def test_patch_generation_requires_both_approvals(
     )
     monkeypatch.setattr(
         workflow_main,
-        "create_t1_backend_patch",
+        "create_backend_patch",
         create_patch,
     )
     monkeypatch.setattr(

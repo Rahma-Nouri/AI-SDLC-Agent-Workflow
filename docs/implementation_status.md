@@ -45,6 +45,7 @@ The approved snapshot `outputs/approved_context/current_approved_context.json` (
 | P2.2a | `b9f0187` | H2b gate (`--h2b-ui-stack`): the Architect proposes the UI stack, the human decides, approved stack stored as `ui_stack` in the snapshot (React, TypeScript, Vite, Vitest, npm) |
 | P2.2b | `23ad374` | Frontend Developer Agent and `--frontend-patch <task>`: UI patch on `agent/<task>-frontend-attempt-N`, committed as "AI-SDLC Frontend Agent"; H3 handles frontend branches, and shows only test reports from the branch under review. Built and tested offline with a fake Gemini client; not yet run with real Gemini |
 | P2.2c | this change | Frontend environment (npm packages approved by the human when the list changes; registry packages only; `--ignore-scripts`) and Vitest runner; `--frontend-patch` now runs tests → one fix (frontend test files frozen) → tests; re-test and H3 revise use Vitest on frontend branches. Offline tests plus one real npm test; not yet run on the real pilot |
+| P2.5b-1 | this change | `--backend-patch <task>`: the Backend Agent works on any approved backend task (same chain as `--resume-patch`, branch `agent/<task>-attempt-N`); the legacy run (no flag) is blocked once an approved snapshot exists |
 
 ## 4. Real-Run Evidence
 

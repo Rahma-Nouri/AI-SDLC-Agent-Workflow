@@ -53,6 +53,7 @@ Run from the workflow folder with the virtual environment active:
 | Command | What it does | Gemini requests |
 |---|---|---|
 | `python main.py --resume-patch` | Fresh H1/H2 on the saved approved context, then: patch → agent branch → environment → tests → (one fix) → report; waits for H3 | 1 (+1 if a fix is needed) |
+| `python main.py --backend-patch T2` | Same chain as `--resume-patch` for any approved backend task, on `agent/T2-attempt-N`; refuses unknown and UI-only tasks, and warns (yes/no) when a dependency has no H3 approve record | 1 (+1 if a fix is needed) |
 | `python main.py --h2b-ui-stack` | H2b: the Architect proposes the UI stack from the approved snapshot; approve stores it as `ui_stack` in the snapshot, revise sends feedback to the Architect, reject stores nothing. Each decision is saved in `outputs/approvals/` | 1 (+1 per revise) |
 | `python main.py --frontend-patch T7` | Needs an approved `ui_stack` (test runner: Vitest). Fresh H1/H2, then: Frontend Agent patch → commit on `agent/T7-frontend-attempt-N` → npm packages (the human approves the list when it changes; `npm install --ignore-scripts`, registry packages only) → Vitest → (one fix, tests frozen) → Vitest → report; waits for H3. The agent only writes in the frontend folder (plus `node_modules/` and `dist/` in `.gitignore`). UI tasks only (`UI_TASKS`: T4, T6–T13, T16) | 1 (+1 if a fix is needed) |
 | `python main.py --h3-review` | H3 on the waiting agent branch, backend or frontend: approve / revise / reject | 0 (revise: 1) |

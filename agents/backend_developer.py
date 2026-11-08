@@ -36,6 +36,13 @@ class BackendDeveloperAgent:
     # limit above, so deleting its entry from the list would not be enough.)
     UNCUT_CONTEXT_FIELDS = {"pilot_specification"}
 
+    # File types that are binary. The agent answers in JSON text, so it may
+    # never propose them (see _validate_text_files).
+    BINARY_SUFFIXES = {
+        ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico",
+        ".docx", ".xlsx", ".pptx", ".zip", ".gz", ".tar", ".db", ".sqlite", ".pyc",
+    }
+
     DIFF_HEADER_PATTERN = re.compile(r"^diff --git a/(.+) b/(.+)$")
     HUNK_HEADER_PATTERN = re.compile(
         r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$"
@@ -168,6 +175,7 @@ class BackendDeveloperAgent:
             )
 
         self._validate_changed_file_paths(model_response.proposed_files)
+        self._validate_text_files(model_response.proposed_files)
         self._validate_python_syntax(model_response.proposed_files)
 
         patch = self._build_local_patch(
@@ -221,6 +229,7 @@ class BackendDeveloperAgent:
     @classmethod
     def _build_prompt(cls, task, architecture, project_context, instructions):
         compact_context = cls._compact_project_context(project_context)
+        task_id = task.get("task_id", "this task")
 
         return f"""
 You are the Backend Developer Agent.
@@ -238,7 +247,7 @@ Rules:
 - Use a file-backed SQLite database for local development; never use sqlite:///:memory: as the application database.
 - Do not create or modify database tables as a side effect of importing the application module.
 - Make database initialization configurable so tests can use a temporary database file.
-- Test database creation using a temporary file-backed SQLite database.
+- Tests that use the database must use a temporary file-backed SQLite database.
 - Pin dependencies only when their compatibility with Python 3.14.8 is verified; otherwise report the version as unresolved rather than guessing.
 - Treat the supplied approved task and its acceptance criteria as the source of truth.
 - Produce only the backend slice required by this task. Do not implement behaviors belonging to other tasks.
@@ -252,10 +261,11 @@ Rules:
 - Use only paths under pilot/app/backend/, the root requirements.txt,
   or top-level tests named tests/test_backend_*.py.
 - Do not include absolute paths or paths containing "..".
+- Propose text files only, never binary files (PDF, images, Office documents, archives). If a test needs such a file, the test code must create it at runtime, for example in a temporary folder.
 - Follow only the delegated task and its acceptance criteria.
 - Make the smallest patch that addresses this task; do not implement future tasks.
 - Do not invent requirements. Put uncertainty in assumptions or unresolved_issues.
-- This assignment may be only the backend slice of T1; do not claim full T1 completion.
+- This assignment may be only the backend slice of {task_id}; do not claim full {task_id} completion.
 - Mark acceptance criteria outside the backend slice as not_addressed.
 - Preserve exact task IDs and file paths from the provided context.
 
@@ -342,6 +352,21 @@ Orchestrator instructions:
         """Convert Windows and old-style line endings to LF for patch output."""
 
         return content.replace("\r\n", "\n").replace("\r", "\n")
+
+    @classmethod
+    def _validate_text_files(cls, proposed_files):
+        """Refuse binary files: a PDF or image cannot travel safely as JSON text.
+
+        Test data such as a PDF must be created by the test code at runtime.
+        """
+
+        for proposed_file in proposed_files:
+            suffix = PurePosixPath(proposed_file.path).suffix.lower()
+            if suffix in cls.BINARY_SUFFIXES or "\x00" in proposed_file.content:
+                raise ValueError(
+                    f"Binary files may not be proposed: {proposed_file.path}. "
+                    "Create test data inside the test code at runtime instead."
+                )
 
     @staticmethod
     def _validate_python_syntax(proposed_files):
