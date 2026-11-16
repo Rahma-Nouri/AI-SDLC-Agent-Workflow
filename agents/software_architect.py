@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from agents.agent_contracts import UiStackProposal
+from agents.agent_contracts import UiStackProposal, llm_usage_from_response
 
 
 class SoftwareArchitectAgent:
@@ -33,6 +33,8 @@ class SoftwareArchitectAgent:
 
         self.client = genai.Client(api_key=api_key)
         self.model = "gemini-3.8-flash"
+        # Usage of the latest Gemini request (saved in the H2 / H2b records).
+        self.last_llm_usage = None
 
     @staticmethod
     def validate_task_coverage(architecture, tasks):
@@ -269,6 +271,8 @@ Return the architecture document in Markdown.
             contents=prompt,
         )
 
+        self.last_llm_usage = llm_usage_from_response(response)
+
         architecture = getattr(response, "text", None)
 
         if not isinstance(architecture, str) or not architecture.strip():
@@ -334,6 +338,8 @@ Return the architecture document in Markdown.
             model=self.model,
             contents=prompt,
         )
+
+        self.last_llm_usage = llm_usage_from_response(response)
 
         revised = getattr(response, "text", None)
 
@@ -419,6 +425,8 @@ Rules:
                 response_json_schema=UiStackProposal.model_json_schema(),
             ),
         )
+
+        self.last_llm_usage = llm_usage_from_response(response)
 
         response_text = getattr(response, "text", None)
 

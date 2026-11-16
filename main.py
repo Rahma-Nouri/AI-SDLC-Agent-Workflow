@@ -14,6 +14,7 @@ from agents.agent_contracts import (
     DocumentationResult,
     FrontendDeveloperResult,
     UiStackProposal,
+    usage_record,
 )
 from agents.backend_developer import BackendDeveloperAgent
 from agents.correction_loop import BACKEND_TESTS, frontend_tests, run_correction_loop
@@ -39,6 +40,7 @@ from agents.orchestrator import OrchestratorAgent
 from agents.pilot_board import IN_PROGRESS, approved_task_ids, plan_board_sync, set_task_status
 from agents.pilot_environment import PilotEnvironment
 from agents.pilot_git_agent import PilotGitAgent, PilotGitError, branch_role, branch_task_id
+from agents.run_log import RunLog, command_name, run_log_folder
 from agents.software_architect import SoftwareArchitectAgent
 from agents.testing_workflow import run_frontend_task_tests, run_task_tests
 from agents.ticket_quality_checker import TicketQualityChecker
@@ -388,6 +390,8 @@ def run_architect_revision(pilot_root, architecture_path, tasks, specification, 
             "branch": branch,
             "notes": notes,
             "decided_at": datetime.now().isoformat(timespec="seconds"),
+            # The Architect's Gemini request for this revision (None = not reported).
+            "llm_usage": usage_record(getattr(architect, "last_llm_usage", None)),
         }, gate="H2")
         commit = git_agent.commit_architecture_revision(revised, record_path)
     except PilotGitError as error:
@@ -516,6 +520,25 @@ def review_and_approve_architecture(
             ):
                 print("H2 approval cannot be granted.")
                 return False
+
+            if not revision_branch:
+                # An approve without a revision is saved too, like every H3 decision,
+                # so the evaluation can show each H2 approval. (After a revision,
+                # merge_architecture_revision already wrote the approve record.)
+                # It stays uncommitted in outputs/approvals/ as a run record; the
+                # next agent branch commits it, as with an H2 reject record.
+                try:
+                    write_decision_record(pilot_root, "architecture", {
+                        "gate": "H2",
+                        "decision": "approve",
+                        "branch": None,
+                        "notes": "",
+                        "decided_at": datetime.now().isoformat(timespec="seconds"),
+                    }, gate="H2")
+                except OSError as error:
+                    print(f"\nCould not save the H2 decision record: {error}")
+                    print("H2 approval cannot be granted.")
+                    return False
 
             orchestrator.record_approval("H2", "approve")
             print("\nH2 approved: validated architecture accepted.")
@@ -2182,4 +2205,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    # Every command leaves a run log outside both repositories (evaluation
+    # evidence): the console output and the human's answers at the gates.
+    # Only here, so the tests that call main() directly never write logs.
+    with RunLog(command_name(sys.argv[1:]), run_log_folder(Path(__file__).resolve().parent)):
+        main()

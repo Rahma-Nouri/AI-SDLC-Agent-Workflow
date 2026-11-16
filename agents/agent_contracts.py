@@ -10,6 +10,64 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LlmUsage(ContractModel):
+    """Gemini usage of one or more requests (evidence for the evaluation).
+
+    A token count is None when Gemini did not report it: we never guess.
+    total_tokens is Gemini's own total, which also counts the model's thinking
+    tokens, so it can be larger than prompt_tokens + output_tokens.
+    """
+
+    requests: int
+    prompt_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+
+
+def llm_usage_from_response(response):
+    """The usage of ONE Gemini request, read from the response's usage metadata."""
+
+    usage = getattr(response, "usage_metadata", None)
+
+    def count(name):
+        value = getattr(usage, name, None)
+        # Only a real whole number counts; anything else (missing, a test fake) is None.
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    return LlmUsage(
+        requests=1,
+        prompt_tokens=count("prompt_token_count"),
+        output_tokens=count("candidates_token_count"),
+        total_tokens=count("total_token_count"),
+    )
+
+
+def sum_llm_usage(usages):
+    """Add up several usages, for example all Gemini requests of one correction loop.
+
+    If one request has an unknown (None) count, the sum of that count is unknown too.
+    No usages at all = no Gemini request was made, so every count is 0.
+    """
+
+    usages = [usage for usage in usages if usage is not None]
+
+    def total(field):
+        values = [getattr(usage, field) for usage in usages]
+        return None if None in values else sum(values)
+
+    return LlmUsage(
+        requests=sum(usage.requests for usage in usages),
+        prompt_tokens=total("prompt_tokens"),
+        output_tokens=total("output_tokens"),
+        total_tokens=total("total_tokens"),
+    )
+
+
+def usage_record(usage):
+    """An LlmUsage as plain JSON data for a decision record; anything else is None."""
+    return usage.model_dump() if isinstance(usage, LlmUsage) else None
+
+
 class ChangedFile(ContractModel):
     path: str = Field(min_length=1)
     purpose: str = Field(min_length=1)
@@ -56,6 +114,8 @@ class BackendDeveloperResult(ContractModel):
     tests_added: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     unresolved_issues: list[str] = Field(default_factory=list)
+    # The Gemini request behind this result. None = no Gemini request (a test fake).
+    llm_usage: LlmUsage | None = None
 
 
 class FrontendDeveloperModelResponse(BackendDeveloperModelResponse):

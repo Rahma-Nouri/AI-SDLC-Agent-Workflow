@@ -153,7 +153,7 @@ def test_approve_and_no_keeps_the_issue_open_and_in_progress(tmp_path):
     repo, _ = make_review_setup(tmp_path, FIXED, tests_passed=True)
     github = FakeBoardGitHub()
 
-    review(repo, ["approve", "", "no"], github=github)
+    review(repo, ["approve", "Works, one criterion left", "no"], github=github)
 
     assert github.closed == [] and github.issues[0]["state"] == "open"
     assert github.status_calls == [(47, "In Progress")]
@@ -164,7 +164,7 @@ def test_a_board_error_only_warns_and_the_merge_stays(tmp_path, capsys):
     repo, remote = make_review_setup(tmp_path, FIXED, tests_passed=True)
     github = FakeBoardGitHub(board_fails=True)
 
-    outcome, _ = review(repo, ["approve", "", "yes"], github=github)
+    outcome, _ = review(repo, ["approve", "All criteria met", "yes"], github=github)
 
     assert outcome["decision"] == "approve" and outcome["merge_commit"]
     assert git(repo, "branch", "--show-current") == "pilot/main"

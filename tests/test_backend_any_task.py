@@ -220,7 +220,7 @@ def test_h3_on_a_t2_branch_reads_task_t2_and_merges(tmp_path, approve_h2, monkey
 
     outcome = workflow_main.run_h3_review_command(
         repo, GateOrchestrator(), git_agent=PilotGitAgent(repo), environment=ReadyEnvironment(),
-        github_client=None, ask=answers("approve", ""),
+        github_client=None, ask=answers("approve", "T2 tests pass"),
     )
 
     assert outcome["decision"] == "approve" and outcome["branch"] == "agent/T2-attempt-1"

@@ -24,6 +24,7 @@ from agents.agent_contracts import (
     FrontendDeveloperModelResponse,
     FrontendDeveloperResult,
     UiStackProposal,
+    llm_usage_from_response,
 )
 from agents.backend_developer import BackendDeveloperAgent
 
@@ -145,6 +146,10 @@ class FrontendDeveloperAgent(BackendDeveloperAgent):
     def create_patch(self, work_package):
         """Generate a locally-built, human-reviewable patch (1 Gemini request)."""
 
+        # Usage of this call's Gemini request; stays None if no response arrives.
+        # Set before any check, so a failed call never shows an older request's usage.
+        self.last_llm_usage = None
+
         task = work_package["task"]
         task_id = task["task_id"]
         architecture = work_package["architecture"]
@@ -169,6 +174,8 @@ class FrontendDeveloperAgent(BackendDeveloperAgent):
                 thinking_config=types.ThinkingConfig(thinking_level="low"),
             ),
         )
+        # Saved now, before any check can fail, so even a refused answer is counted.
+        self.last_llm_usage = llm_usage_from_response(response)
 
         candidates = getattr(response, "candidates", None) or []
         finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
@@ -206,6 +213,7 @@ class FrontendDeveloperAgent(BackendDeveloperAgent):
             tests_added=model_response.tests_added,
             assumptions=model_response.assumptions,
             unresolved_issues=model_response.unresolved_issues,
+            llm_usage=self.last_llm_usage,
         )
 
         self._validate_unified_diff(result.patch, result.changed_files)

@@ -48,6 +48,8 @@ H3  the human reviews commits, files, test evidence and warnings:
 
 Every run record (proposals, reports, test results, H3 decisions) is committed by the agent under `outputs/` on the agent branch, so the evidence stays traceable.
 
+Evaluation evidence (I1): every agent report and loop/revision report has `llm_usage` (Gemini requests and prompt/output/total tokens; `null` when Gemini did not report a count). Every H2 approve is saved in `outputs/approvals/`, and an H3 approve needs a short reason. Each `main.py` command also writes a run log (the console output and the human's answers, with `GEMINI_API_KEY` and `GITHUB_TOKEN` replaced by `[REDACTED]`) to `../AI-SDLC-run-logs/<command>_<YYYYMMDD_HHMMSS>.log`, outside both repositories; set `RUN_LOG_DIR` to use another folder.
+
 ## 4. Commands
 
 Run from the workflow folder with the virtual environment active:

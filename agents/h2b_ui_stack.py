@@ -13,6 +13,7 @@ commits them on the next agent branch.
 
 from datetime import datetime
 
+from agents.agent_contracts import usage_record
 from agents.h3_review import ask_choice, write_decision_record
 
 GATE = "H2b"
@@ -91,6 +92,9 @@ def run_h2b_review(*, orchestrator, architect, specification, snapshot, pilot_ro
                     "decided_at": datetime.now().isoformat(timespec="seconds"),
                     "proposal": proposal.model_dump(),
                     "feedback": feedback,
+                    # The Architect's Gemini request for the proposal shown above
+                    # (its latest request; None = not reported or a test fake).
+                    "llm_usage": usage_record(getattr(architect, "last_llm_usage", None)),
                 },
                 gate=GATE,
             )

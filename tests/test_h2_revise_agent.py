@@ -206,7 +206,9 @@ def test_approve_without_revise_makes_no_gemini_call_and_no_branch(tmp_path, mon
     )
 
     assert result is True and agent_branches(repo) == ""
-    assert git(repo, "status", "--porcelain") == ""
+    # The only change is the new H2 approve record (an uncommitted run record).
+    changes = git(repo, "status", "--porcelain", "--untracked-files=all").splitlines()
+    assert len(changes) == 1 and changes[0].startswith("?? outputs/approvals/architecture_H2_approve_")
 
 
 def test_an_approved_revision_warns_about_the_ui_stack(tmp_path, capsys):

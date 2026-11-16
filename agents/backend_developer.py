@@ -14,6 +14,7 @@ from agents.agent_contracts import (
     BackendDeveloperModelResponse,
     BackendDeveloperResult,
     ChangedFile,
+    llm_usage_from_response,
 )
 
 
@@ -77,6 +78,10 @@ class BackendDeveloperAgent:
     def create_patch(self, work_package):
         """Generate a locally-built, human-reviewable patch."""
 
+        # Usage of this call's Gemini request; stays None if no response arrives.
+        # Set before any check, so a failed call never shows an older request's usage.
+        self.last_llm_usage = None
+
         if not isinstance(work_package, dict):
             raise ValueError("The work package must be a dictionary.")
 
@@ -133,6 +138,8 @@ class BackendDeveloperAgent:
             else None
         )
         usage = getattr(response, "usage_metadata", None)
+        # Saved now, before any check can fail, so even a refused answer is counted.
+        self.last_llm_usage = llm_usage_from_response(response)
 
         reason_name = getattr(finish_reason, "name", str(finish_reason))
         print(f"Gemini finish reason: {reason_name}")
@@ -195,6 +202,7 @@ class BackendDeveloperAgent:
             tests_added=model_response.tests_added,
             assumptions=model_response.assumptions,
             unresolved_issues=model_response.unresolved_issues,
+            llm_usage=self.last_llm_usage,
         )
 
         self._validate_unified_diff(result.patch, result.changed_files)

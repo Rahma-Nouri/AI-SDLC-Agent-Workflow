@@ -16,7 +16,7 @@ import re
 from pathlib import PurePosixPath
 from typing import Literal, NamedTuple, Optional, Pattern
 
-from agents.agent_contracts import ContractModel
+from agents.agent_contracts import ContractModel, LlmUsage, sum_llm_usage
 from agents.output_validation import ValidationFinding, validate_files
 from agents.pilot_environment import EnvironmentResult
 from agents.pilot_git_agent import FrozenFilesError, PilotGitError
@@ -93,6 +93,20 @@ class CorrectionLoopReport(ContractModel):
     trigger: Literal["automatic", "retest", "h3_revise"] = "automatic"
     human_feedback: str | None = None
     tests_may_change: bool = False  # only ever True by a human decision at H3
+    # All Gemini requests of this loop or revision, added up (the first patch has its own report).
+    llm_usage: LlmUsage | None = None
+
+
+def agent_usage(agent, result=None):
+    """The usage of the agent's latest Gemini request.
+
+    result: the agent's result, when it returned one. Without it (the agent
+    raised an error), the agent may still have received an answer and spent
+    tokens, so we read what the agent saved before its checks failed.
+    """
+    usage = getattr(result, "llm_usage", None) if result is not None else getattr(agent, "last_llm_usage", None)
+    # Test fakes have no real usage: anything that is not an LlmUsage counts as "no request".
+    return usage if isinstance(usage, LlmUsage) else None
 
 
 def validate_branch(git_agent, pilot_root):
@@ -168,6 +182,7 @@ def run_correction_loop(
     tests_generated = list(first_result.tests_added if tests_generated is None else tests_generated)
     tests_run = [path for path in tests_generated if (pilot_root / path).is_file()]
     environment = []
+    usages = []  # one entry per Gemini request of a fix attempt
 
     def report(runs, fixes, final_result):
         return CorrectionLoopReport(
@@ -181,6 +196,7 @@ def run_correction_loop(
             fix_attempts=fixes,
             final_result=final_result,
             decision="ready_for_review" if final_result == "passed" else "needs_revision",
+            llm_usage=sum_llm_usage(usages),
         )
 
     # Without tests there is no evidence; the human sees that at H3.
@@ -225,9 +241,11 @@ def run_correction_loop(
         try:
             fix = backend_agent.create_patch(work_package)
         except Exception as error:
+            usages.append(agent_usage(backend_agent))
             fixes.append(FixAttempt(attempt=attempt, outcome="failed", detail=f"No fix proposal: {error}"))
             break
 
+        usages.append(agent_usage(backend_agent, fix))
         patch_path, report_path = save_proposal(fix, f"fix{attempt}_")
         declared = [item.path for item in fix.changed_files]
 
@@ -305,7 +323,7 @@ def run_revision(
 
     task_id = task["task_id"]
     tests_run = [path for path in tests_generated if (pilot_root / path).is_file()]
-    environment, runs, fixes = [], [], []
+    environment, runs, fixes, usages = [], [], [], []
 
     def report(final_result):
         return CorrectionLoopReport(
@@ -314,6 +332,7 @@ def run_revision(
             runs=runs, fix_attempts=fixes, final_result=final_result,
             decision="ready_for_review" if final_result == "passed" else "needs_revision",
             trigger="h3_revise", human_feedback=feedback, tests_may_change=tests_may_change,
+            llm_usage=sum_llm_usage(usages),
         )
 
     work_package = orchestrator.delegate_task(
@@ -326,9 +345,11 @@ def run_revision(
     try:
         revision = backend_agent.create_patch(work_package)
     except Exception as error:
+        usages.append(agent_usage(backend_agent))
         fixes.append(FixAttempt(attempt=1, outcome="failed", detail=f"No revision proposal: {error}"))
         return report("failed")
 
+    usages.append(agent_usage(backend_agent, revision))
     patch_path, report_path = save_proposal(revision, "revise1_")
     declared = [item.path for item in revision.changed_files]
     try:
