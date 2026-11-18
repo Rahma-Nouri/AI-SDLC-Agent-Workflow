@@ -174,8 +174,7 @@ class PilotGitAgent:
         branch = self._git("branch", "--show-current").stdout.strip()
         if branch != BASE_BRANCH:
             raise PilotGitError(
-                f"The pilot workspace is on '{branch}', expected '{BASE_BRANCH}'. "
-                "An earlier agent branch may still wait for an H3 decision."
+                f"The pilot workspace is on '{branch}', expected '{BASE_BRANCH}'. " + self._left_over_advice(branch)
             )
 
         unexpected = [
@@ -186,6 +185,22 @@ class PilotGitAgent:
             raise PilotGitError(
                 "The pilot workspace has unexpected changes: " + ", ".join(unexpected)
             )
+
+    def _left_over_advice(self, branch):
+        """Tell the human what to do when the workspace is not on pilot/main."""
+        switch_back = f'git -C "{self.pilot_root}" switch {BASE_BRANCH}'
+        if branch.startswith(ARCHITECTURE_BRANCH):
+            # Normally H2 goes back to pilot/main itself, even after Ctrl+C; this
+            # branch stays checked out only if the program was killed.
+            return (
+                f"It is left over from an interrupted H2 review. Go back with: {switch_back} "
+                f"(the revision stays on {branch}; if it is not needed, delete it with "
+                f'git -C "{self.pilot_root}" branch -D {branch}).'
+            )
+        if branch.startswith(BRANCH_PREFIX):
+            # An agent branch stays checked out on purpose while it waits for H3.
+            return "This agent branch waits for the H3 decision: run python main.py --h3-review first."
+        return f"Go back with: {switch_back}"
 
     def next_branch_name(self, task_id, role="backend"):
         """agent/<task>-attempt-<n>, where n counts earlier attempts of this role."""
@@ -255,7 +270,9 @@ class PilotGitAgent:
                 self._git(*identity, "commit", "-m", f"[{task_id}] Record the patch proposal and report")
                 records_commit = self._git("rev-parse", "--short", "HEAD").stdout.strip()
 
-        except Exception:
+        # BaseException, not Exception: Ctrl+C raises KeyboardInterrupt, which is
+        # not an Exception. Catching it too means an interrupted step is undone.
+        except BaseException:
             self._undo_branch(branch, patch_path, state)
             raise
 
@@ -336,7 +353,7 @@ class PilotGitAgent:
             )
             code_commit = self._git("rev-parse", "--short", "HEAD").stdout.strip()
             state["committed"] = True
-        except Exception:
+        except BaseException:  # also Ctrl+C: never leave a half-applied fix behind
             if state["applied"] and not state["committed"]:
                 self._git("reset", "--quiet", check=False)
                 self._git("apply", "-R", str(patch_path), check=False)
@@ -399,15 +416,109 @@ class PilotGitAgent:
         self._git("push", remote, BASE_BRANCH)
 
     def delete_agent_branch(self, branch):
-        """After an H3 rejection: go back to pilot/main and delete the attempt."""
+        """After an H2/H3 rejection: go back to pilot/main and delete the attempt.
+
+        Uncommitted run records (outputs/) do not block and are kept: they come
+        along to pilot/main, and the next agent branch commits them. Any other
+        uncommitted change (for example code edited by hand) still blocks.
+
+        The records the branch COMMITTED are evaluation evidence too, so they are
+        copied to pilot/main as uncommitted files before the branch is deleted.
+        Returns the copied paths (for the reject record).
+        """
         if not branch.startswith(BRANCH_PREFIX):
             raise PilotGitError("Only agent/ branches may be deleted.")
         if self.current_agent_branch() != branch:
             raise PilotGitError(f"Expected to be on {branch}.")
-        if self._changed_paths():
-            raise PilotGitError("Commit all records before deleting the branch.")
-        self._git("switch", BASE_BRANCH)
+        self.refuse_changes_outside_records()
+        # Read them while the branch still exists; written after the switch.
+        branch_records = self._records_committed_on_branch(branch)
+        self._switch_to_base_keeping_records()
+
+        copied = []
+        for path, content in branch_records.items():
+            file = self.pilot_root / path
+            # Never overwrite: a file already there (on pilot/main, or an
+            # uncommitted record just carried over) is kept as it is.
+            if file.exists():
+                continue
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(content)
+            copied.append(path)
+
         self._git("branch", "-D", branch)
+        return copied
+
+    def _records_committed_on_branch(self, branch):
+        """{path: bytes} of the files under outputs/ that the branch added or changed.
+
+        "pilot/main...branch" (three dots) compares the branch with the point
+        where it left pilot/main, so only the branch's own work is listed.
+        --diff-filter=AM: added or modified files (a deleted file has nothing to
+        copy). --no-renames: a renamed file is listed under its new name, as added.
+        The "-- outputs/" limit means pilot code and tests are never copied.
+        """
+        names = self._git(
+            "diff", "--name-only", "--no-renames", "--diff-filter=AM",
+            f"{BASE_BRANCH}...{branch}", "--", RECORDS_PREFIX,
+        ).stdout
+        records = {}
+        for path in sorted(line.strip() for line in names.splitlines() if line.strip()):
+            # The file's exact bytes as committed on the branch. Not through
+            # _git(), which reads text: bytes are copied unchanged.
+            shown = subprocess.run(
+                ["git", "-C", str(self.pilot_root), "show", f"{branch}:{path}"],
+                capture_output=True, timeout=self.timeout_seconds, shell=False, check=False,
+            )
+            if shown.returncode != 0:
+                raise PilotGitError(f"Could not read {path} on {branch}: {shown.stderr.decode('utf-8', 'replace').strip()}")
+            records[path] = shown.stdout
+        return records
+
+    def leave_architecture_branch(self):
+        """After an interrupted H2 review: go back to pilot/main, keep the revision branch.
+
+        The branch is not deleted: its commit holds the human's notes record,
+        which must not be lost. Returns the branch left, or None when the
+        workspace is not on an architecture revision branch (nothing to do).
+        """
+        branch = self._git("branch", "--show-current", check=False).stdout.strip()
+        if not branch.startswith(ARCHITECTURE_BRANCH):
+            return None
+        self.refuse_changes_outside_records()
+        self._switch_to_base_keeping_records()
+        return branch
+
+    def refuse_changes_outside_records(self):
+        """Stop if anything other than a run record is uncommitted (never weaken this)."""
+        unexpected = [path for path in self._changed_paths() if not path.startswith(RECORDS_PREFIX)]
+        if unexpected:
+            raise PilotGitError("The pilot workspace has unexpected changes: " + ", ".join(unexpected))
+
+    def _switch_to_base_keeping_records(self):
+        """Switch to pilot/main and take the uncommitted run records along.
+
+        A plain "git switch" carries uncommitted files only when pilot/main has
+        the same version of them. For a record that differs (for example the
+        snapshot, refreshed on the agent branch) it refuses to switch. So:
+        1. copy every uncommitted record into memory,
+        2. switch with --discard-changes (this throws away local changes!),
+        3. write the records back, byte for byte.
+        Callers MUST call refuse_changes_outside_records() first, so the only
+        local changes that step 2 can throw away are the records saved in step 1.
+        """
+        saved = {}
+        for path in self.pending_records():
+            file = self.pilot_root / path
+            if file.is_file():  # a deleted record has no content to keep
+                saved[path] = file.read_bytes()
+
+        self._git("switch", "--discard-changes", BASE_BRANCH)
+
+        for path, content in saved.items():
+            file = self.pilot_root / path
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(content)
 
     def commit_records(self, task_id, record_paths, message):
         """Commit run records (reports, proposals) on the current agent branch."""
@@ -463,7 +574,7 @@ class PilotGitAgent:
                 *commit_identity(branch), "commit", "-m", "[architecture] Revise the architecture after the H2 notes",
                 "-m", "Proposed by the Software Architect Agent. Not approved yet: waiting for the human's H2 decision.",
             )
-        except Exception:
+        except BaseException:  # also Ctrl+C: never leave a half-written architecture
             self._git("reset", "--quiet", check=False)
             self._git("checkout", "--", ARCHITECTURE_FILE, check=False)
             raise

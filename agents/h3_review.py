@@ -342,6 +342,10 @@ def run_h3_review(
         record["document_checks"] = [f"{item.file}:{item.line} - {item.message}" for item in findings]
 
     if decision == "approve":
+        # Checked first, before any record is written: a hand-made change outside
+        # outputs/ must stop the approval (the human never edits the pilot).
+        git_agent.refuse_changes_outside_records()
+
         # A short reason is required, so every approval in the evaluation is explained.
         record["reason"] = ask_reason(ask, "Short reason for approving (saved in the record): ")
 
@@ -358,7 +362,10 @@ def run_h3_review(
 
         orchestrator.record_approval("H3", "approve", record["reason"])
         record_path = write_decision_record(pilot_root, task_id, record)
-        git_agent.commit_records(task_id, [record_path], "Record the H3 approval")
+        # Records left over from earlier steps (for example an H2 approve record)
+        # are committed with it as run records, so they do not block the merge.
+        leftovers = [Path(pilot_root) / path for path in git_agent.pending_records()]
+        git_agent.commit_records(task_id, [record_path, *leftovers], "Record the H3 approval")
         merge_commit = git_agent.merge_into_base(task_id, branch)
         print(f"\nMerged {branch} into pilot/main: {merge_commit}")
         pushed = True
@@ -379,7 +386,9 @@ def run_h3_review(
     if decision == "reject":
         record["notes"] = ask("Why do you reject it? (saved in the record): ").strip()
         orchestrator.record_approval("H3", "reject", record["notes"])
-        git_agent.delete_agent_branch(branch)
+        # The branch's committed records (reports, test results) are copied to
+        # pilot/main before it is deleted; the record lists them.
+        record["copied_records"] = git_agent.delete_agent_branch(branch)
         # Written after the deletion, so the record lands on pilot/main as a run
         # record; the next agent branch commits it, so the decision is not lost.
         write_decision_record(pilot_root, task_id, record)

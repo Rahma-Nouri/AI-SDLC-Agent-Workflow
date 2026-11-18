@@ -454,6 +454,52 @@ def review_and_approve_architecture(
     git_agent=None,
     ask=None,
 ):
+    """H2 review (see _architecture_review_loop); goes back to pilot/main after a crash.
+
+    The revision branch exists only during one H2 review: no later command can
+    continue it. So if the review stops with an error or Ctrl+C, the workspace
+    goes back to pilot/main at once (the branch is kept, see below).
+    """
+
+    try:
+        return _architecture_review_loop(
+            orchestrator, architect, architecture_path, tasks, specification, git_agent, ask
+        )
+    # BaseException, not Exception: Ctrl+C raises KeyboardInterrupt, which is
+    # not an Exception. Only a crash comes here; a normal return skips this.
+    except BaseException:
+        pilot_root = Path(architecture_path).parent.parent
+        leave_interrupted_revision(pilot_root, git_agent)
+        raise  # the crash itself is still shown to the human
+
+
+def leave_interrupted_revision(pilot_root, git_agent=None):
+    """After a crashed H2 review: back to pilot/main; the revision branch is kept."""
+
+    try:
+        # A new PilotGitAgent costs nothing (no Gemini): the one created inside
+        # the review loop, after "revise", is not visible here.
+        git_agent = git_agent or PilotGitAgent(pilot_root, workflow_root=Path(__file__).resolve().parent)
+        branch = git_agent.leave_architecture_branch()
+    except Exception as error:
+        # Never hide the original crash behind a second error: only explain.
+        print(f"\nThe H2 review stopped, and the workspace could not go back to pilot/main: {error}")
+        return
+    if branch:
+        print(f"\nThe H2 review stopped. Nothing was merged; the workspace is back on pilot/main.")
+        print(f"The unfinished revision is kept on {branch}. Run H2 again to continue;")
+        print(f'if the revision is not needed, delete it with: git -C "{pilot_root}" branch -D {branch}')
+
+
+def _architecture_review_loop(
+    orchestrator,
+    architect,
+    architecture_path,
+    tasks,
+    specification=None,
+    git_agent=None,
+    ask=None,
+):
     """H2: approve only the current on-disk architecture if it validates.
 
     "revise" never asks the human to edit a file: the human writes notes, and the
@@ -554,7 +600,8 @@ def review_and_approve_architecture(
             reason = ask("Why do you reject the revision? (saved in the record): ").strip()
             orchestrator.record_approval("H2", "reject", reason)
             try:
-                git_agent.delete_agent_branch(revision_branch)
+                # The revision's committed records (the notes) are copied to pilot/main.
+                copied = git_agent.delete_agent_branch(revision_branch)
             except PilotGitError as error:
                 print(f"\nThe Pilot Git Agent could not delete {revision_branch}: {error}")
                 return False
@@ -566,6 +613,7 @@ def review_and_approve_architecture(
                 "branch": revision_branch,
                 "notes": reason,
                 "decided_at": datetime.now().isoformat(timespec="seconds"),
+                "copied_records": copied,
             }, gate="H2")
             print(f"\nDeleted {revision_branch}. The old architecture stays on pilot/main.")
             revision_branch = None
